@@ -116,12 +116,12 @@ pub fn create_worker_session(
         if win_idx == 0 {
             // Create the session with the first window
             session::create_session(session_name, default_dir)?;
-            // Rename the default window
+            // Rename the default window (target the session itself, not a hardcoded index)
             let rename_output = std::process::Command::new("tmux")
                 .args([
                     "rename-window",
                     "-t",
-                    &format!("{session_name}:0"),
+                    session_name,
                     &window.name,
                 ])
                 .output()?;

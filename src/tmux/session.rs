@@ -37,26 +37,38 @@ pub fn create_window(session_name: &str, window_name: &str, working_dir: &Path) 
     // Ensure session exists first
     if !session_exists(session_name) {
         create_session(session_name, working_dir)?;
-        // Rename the first window
+        // Rename the first window (use {end} to handle any base-index setting)
         let output = Command::new("tmux")
             .args([
                 "rename-window",
                 "-t",
-                &format!("{session_name}:0"),
+                &format!("{session_name}:{{end}}"),
                 window_name,
             ])
             .output()?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            return Err(DevflowError::TmuxCommand(format!(
-                "Failed to rename window: {stderr}"
-            )));
+            // Fallback: try without token (older tmux)
+            let output2 = Command::new("tmux")
+                .args([
+                    "rename-window",
+                    "-t",
+                    session_name,
+                    window_name,
+                ])
+                .output()?;
+            if !output2.status.success() {
+                let stderr = String::from_utf8_lossy(&output2.stderr);
+                return Err(DevflowError::TmuxCommand(format!(
+                    "Failed to rename window: {stderr}"
+                )));
+            }
         }
         return Ok(());
     }
 
+    // Use -a to append after the last window, avoiding index collisions
     let output = Command::new("tmux")
-        .args(["new-window", "-t", session_name, "-n", window_name, "-c"])
+        .args(["new-window", "-a", "-t", session_name, "-n", window_name, "-c"])
         .arg(working_dir)
         .output()?;
 
