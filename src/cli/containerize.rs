@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use console::style;
 use dialoguer::{Confirm, Select};
 
@@ -6,20 +8,7 @@ use crate::container::templates;
 use crate::error::{DevflowError, Result};
 use crate::git::repo::GitRepo;
 
-pub async fn run() -> Result<()> {
-    let git = GitRepo::discover()?;
-    let devflow_dir = git.devflow_dir();
-
-    if !devflow_dir.join("config.yml").exists() {
-        return Err(DevflowError::NotInitialized);
-    }
-
-    let config = ProjectConfig::load(&devflow_dir.join("config.yml"))?;
-
-    println!("{}", style("Container Setup Wizard").bold());
-    println!();
-
-    // Determine available templates
+fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result<String> {
     let options = vec!["Rails", "React Native", "Custom (Ubuntu base)"];
 
     let selection = Select::new()
@@ -50,18 +39,10 @@ pub async fn run() -> Result<()> {
         .map_err(|e| DevflowError::Other(format!("Confirm cancelled: {e}")))?;
 
     if !proceed {
-        println!("Cancelled.");
-        return Ok(());
+        return Err(DevflowError::Other("Cancelled.".to_string()));
     }
 
-    // Write Dockerfile
-    let dockerfile_path = git.root.join("Dockerfile.devflow");
-    std::fs::write(&dockerfile_path, &dockerfile_content)?;
-
-    // Update config
-    let mut config = config;
-    config.container_enabled = true;
-    config.save(&devflow_dir.join("config.yml"))?;
+    std::fs::write(dockerfile_path, &dockerfile_content)?;
 
     println!(
         "{} Wrote {}",
@@ -72,6 +53,103 @@ pub async fn run() -> Result<()> {
         "Build with: {}",
         style("devflow container build <name>").cyan()
     );
+
+    let _ = repo_root; // available for future use
+    Ok(dockerfile_content)
+}
+
+pub async fn run() -> Result<()> {
+    let git = GitRepo::discover()?;
+    let devflow_dir = git.devflow_dir();
+
+    if !devflow_dir.join("config.yml").exists() {
+        return Err(DevflowError::NotInitialized);
+    }
+
+    let config = ProjectConfig::load(&devflow_dir.join("config.yml"))?;
+
+    println!("{}", style("Container Setup Wizard").bold());
+    println!();
+
+    // Check for existing Dockerfiles
+    let existing_dockerfiles: Vec<(&str, std::path::PathBuf)> = [
+        "Dockerfile",
+        "Dockerfile.devflow",
+        "Dockerfile.dev",
+        "dockerfile",
+    ]
+    .iter()
+    .filter_map(|name| {
+        let path = git.root.join(name);
+        if path.exists() {
+            Some((*name, path))
+        } else {
+            None
+        }
+    })
+    .collect();
+
+    let dockerfile_content;
+    let dockerfile_path = git.root.join("Dockerfile.devflow");
+
+    if !existing_dockerfiles.is_empty() {
+        println!(
+            "{} Found existing Dockerfile(s):",
+            style("!").yellow()
+        );
+        for (name, path) in &existing_dockerfiles {
+            println!("  - {}", path.display());
+            let _ = name; // used for display via path
+        }
+        println!();
+
+        let mut use_options: Vec<String> = existing_dockerfiles
+            .iter()
+            .map(|(name, _)| format!("Use existing {name}"))
+            .collect();
+        use_options.push("Generate new from template".to_string());
+
+        let selection = Select::new()
+            .with_prompt("Which Dockerfile should compose use?")
+            .items(&use_options)
+            .default(0)
+            .interact()
+            .map_err(|e| DevflowError::Other(format!("Selection cancelled: {e}")))?;
+
+        if selection < existing_dockerfiles.len() {
+            // Copy existing Dockerfile to Dockerfile.devflow if it isn't already
+            let (name, source_path) = &existing_dockerfiles[selection];
+            if *name != "Dockerfile.devflow" {
+                let content = std::fs::read_to_string(source_path)?;
+                std::fs::write(&dockerfile_path, &content)?;
+                println!(
+                    "{} Copied {} to {}",
+                    style("✓").green().bold(),
+                    name,
+                    dockerfile_path.display()
+                );
+            } else {
+                println!(
+                    "{} Using existing {}",
+                    style("✓").green().bold(),
+                    dockerfile_path.display()
+                );
+            }
+            dockerfile_content = std::fs::read_to_string(&dockerfile_path)?;
+        } else {
+            // Fall through to template selection
+            dockerfile_content = select_and_write_template(&git.root, &dockerfile_path)?;
+        }
+    } else {
+        dockerfile_content = select_and_write_template(&git.root, &dockerfile_path)?;
+    }
+
+    let _ = &dockerfile_content;
+
+    // Update config
+    let mut config = config;
+    config.container_enabled = true;
+    config.save(&devflow_dir.join("config.yml"))?;
 
     // Offer to generate compose template for per-worker stacks
     let generate_compose = Confirm::new()

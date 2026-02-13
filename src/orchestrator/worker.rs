@@ -55,6 +55,14 @@ pub fn spawn(
         return Err(e);
     }
 
+    // 5½. Copy Dockerfile.devflow into worktree if it exists in repo root but not worktree
+    let dockerfile_name = "Dockerfile.devflow";
+    let repo_dockerfile = git.root.join(dockerfile_name);
+    let worktree_dockerfile = worktree_path.join(dockerfile_name);
+    if repo_dockerfile.exists() && !worktree_dockerfile.exists() {
+        let _ = std::fs::copy(&repo_dockerfile, &worktree_dockerfile);
+    }
+
     // 5a-5d. Optionally start compose stack
     let mut compose_file = None;
     let mut compose_ports = None;
