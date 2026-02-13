@@ -42,6 +42,12 @@ pub fn generate_compose_file(
     let compose_file = compose_dir.join("docker-compose.yml");
     std::fs::write(&compose_file, rendered)?;
 
+    // Copy .env into compose directory so Docker Compose can resolve ${VAR} in the template
+    let worktree_env = worktree_path.join(".env");
+    if worktree_env.exists() {
+        let _ = std::fs::copy(&worktree_env, compose_dir.join(".env"));
+    }
+
     Ok(compose_file)
 }
 
