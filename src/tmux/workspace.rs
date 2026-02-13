@@ -60,15 +60,9 @@ pub fn render_template(template: &WorkspaceTemplate, vars: &WorkspaceVars) -> Wo
         let mut result = s.to_string();
         result = result.replace("{{WORKTREE_PATH}}", vars.worktree_path);
         result = result.replace("{{WORKER_NAME}}", vars.worker_name);
-        if let Some(port) = vars.app_port {
-            result = result.replace("{{APP_PORT}}", &port.to_string());
-        }
-        if let Some(port) = vars.db_port {
-            result = result.replace("{{DB_PORT}}", &port.to_string());
-        }
-        if let Some(port) = vars.redis_port {
-            result = result.replace("{{REDIS_PORT}}", &port.to_string());
-        }
+        result = result.replace("{{APP_PORT}}", &vars.app_port.unwrap_or(3000).to_string());
+        result = result.replace("{{DB_PORT}}", &vars.db_port.unwrap_or(5432).to_string());
+        result = result.replace("{{REDIS_PORT}}", &vars.redis_port.unwrap_or(6379).to_string());
         result
     };
 
