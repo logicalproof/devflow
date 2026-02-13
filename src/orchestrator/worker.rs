@@ -64,6 +64,20 @@ pub fn spawn(
         }
     }
 
+    // Warn if .env exists but may not be gitignored
+    let env_file = git.root.join(".env");
+    if env_file.exists() {
+        let gitignore = git.root.join(".gitignore");
+        let is_ignored = std::fs::read_to_string(&gitignore)
+            .map(|c| c.lines().any(|l| l.trim() == ".env"))
+            .unwrap_or(false);
+        if !is_ignored {
+            eprintln!(
+                "Warning: .env exists but is not in .gitignore — secrets may be committed!"
+            );
+        }
+    }
+
     // 5a-5d. Optionally start compose stack
     let mut compose_file = None;
     let mut compose_ports = None;

@@ -8,6 +8,26 @@ use crate::detector;
 use crate::error::Result;
 use crate::git::repo::GitRepo;
 
+fn ensure_gitignore_entry(repo_root: &std::path::Path, entry: &str) {
+    let gitignore_path = repo_root.join(".gitignore");
+    let contents = fs::read_to_string(&gitignore_path).unwrap_or_default();
+
+    // Check if any line already matches (ignoring trailing whitespace)
+    let already_present = contents
+        .lines()
+        .any(|line| line.trim() == entry);
+
+    if !already_present {
+        let mut new_contents = contents;
+        if !new_contents.is_empty() && !new_contents.ends_with('\n') {
+            new_contents.push('\n');
+        }
+        new_contents.push_str(entry);
+        new_contents.push('\n');
+        let _ = fs::write(&gitignore_path, new_contents);
+    }
+}
+
 pub async fn run() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = git.devflow_dir();
@@ -68,6 +88,10 @@ pub async fn run() -> Result<()> {
 
     // Create empty tasks file
     fs::write(devflow_dir.join("tasks.json"), "[]")?;
+
+    // Ensure .env is in .gitignore to prevent secrets from being committed
+    ensure_gitignore_entry(&git.root, ".env");
+    ensure_gitignore_entry(&git.root, ".devflow/");
 
     println!(
         "{} Initialized devflow for project '{}'",
