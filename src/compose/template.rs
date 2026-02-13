@@ -37,11 +37,16 @@ pub fn default_rails_template() -> &'static str {
     build:
       context: "{{WORKTREE_PATH}}"
       dockerfile: Dockerfile.devflow
+      args:
+        - BUNDLE_GITHUB__COM=${BUNDLE_GITHUB__COM:-}
     container_name: devflow-{{WORKER_NAME}}-app
     ports:
       - "{{APP_PORT}}:3000"
     volumes:
       - "{{WORKTREE_PATH}}:/app"
+    env_file:
+      - path: "{{WORKTREE_PATH}}/.env"
+        required: false
     environment:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_dev
       - REDIS_URL=redis://redis:6379/0
