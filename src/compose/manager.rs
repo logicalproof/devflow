@@ -1,5 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use crate::error::{DevflowError, Result};
 
@@ -88,6 +89,119 @@ pub fn down(compose_file: &Path) -> Result<()> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         return Err(DevflowError::ComposeOperationFailed(format!(
             "compose down failed: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Wait for all services in the compose stack to be running (and healthy, if
+/// a healthcheck is defined). Polls `docker compose ps --format json` every 2s.
+pub fn wait_healthy(compose_file: &Path, timeout: Duration) -> Result<()> {
+    let project = project_name(compose_file);
+    let start = Instant::now();
+
+    println!("Waiting for containers to be ready...");
+
+    loop {
+        let output = Command::new("docker")
+            .args([
+                "compose",
+                "-f",
+                &compose_file.to_string_lossy(),
+                "-p",
+                &project,
+                "ps",
+                "--format",
+                "json",
+            ])
+            .output()?;
+
+        if output.status.success() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let mut total = 0u32;
+            let mut ready = 0u32;
+
+            for line in stdout.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Ok(svc) = serde_json::from_str::<serde_json::Value>(line) {
+                    total += 1;
+                    let state = svc
+                        .get("State")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let health = svc
+                        .get("Health")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let name = svc
+                        .get("Name")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("unknown");
+
+                    // Fail fast if a container has exited or died
+                    if state == "exited" || state == "dead" {
+                        return Err(DevflowError::ComposeOperationFailed(format!(
+                            "container '{name}' {state} unexpectedly"
+                        )));
+                    }
+
+                    // Running with no healthcheck, or running+healthy
+                    if state == "running" && (health.is_empty() || health == "healthy") {
+                        ready += 1;
+                    }
+                }
+            }
+
+            if total > 0 && ready == total {
+                println!("  All {total} container(s) ready.");
+                return Ok(());
+            }
+
+            println!("  {ready}/{total} container(s) ready...");
+        }
+
+        if start.elapsed() >= timeout {
+            return Err(DevflowError::ComposeOperationFailed(format!(
+                "containers not ready after {}s",
+                timeout.as_secs()
+            )));
+        }
+
+        std::thread::sleep(Duration::from_secs(2));
+    }
+}
+
+/// Execute a command inside a running compose service (non-interactive).
+pub fn exec(compose_file: &Path, service: &str, cmd: &str) -> Result<()> {
+    let project = project_name(compose_file);
+    let output = Command::new("docker")
+        .args([
+            "compose",
+            "-f",
+            &compose_file.to_string_lossy(),
+            "-p",
+            &project,
+            "exec",
+            "-T",
+            service,
+            "sh",
+            "-c",
+            cmd,
+        ])
+        .output()?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    if !stdout.is_empty() {
+        print!("{stdout}");
+    }
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::ComposeOperationFailed(format!(
+            "exec '{cmd}' failed: {stderr}"
         )));
     }
     Ok(())

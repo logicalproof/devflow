@@ -12,6 +12,14 @@ pub struct LocalConfig {
     pub max_workers: usize,
     #[serde(default)]
     pub min_disk_space_mb: u64,
+    #[serde(default = "default_compose_health_timeout_secs")]
+    pub compose_health_timeout_secs: u64,
+    #[serde(default)]
+    pub compose_post_start: Vec<String>,
+}
+
+fn default_compose_health_timeout_secs() -> u64 {
+    60
 }
 
 impl LocalConfig {
@@ -35,6 +43,8 @@ impl LocalConfig {
             tmux_session_name: "devflow".to_string(),
             max_workers: 4,
             min_disk_space_mb: 500,
+            compose_health_timeout_secs: default_compose_health_timeout_secs(),
+            compose_post_start: Vec::new(),
         }
     }
 }

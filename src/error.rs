@@ -68,6 +68,9 @@ pub enum DevflowError {
     #[error("Docker Compose is not available. Install: https://docs.docker.com/compose/install/")]
     ComposeNotAvailable,
 
+    #[error("Port {port} is already in use ({service}). Free it or adjust the compose template.")]
+    PortInUse { port: u16, service: String },
+
     #[error("Compose operation failed: {0}")]
     ComposeOperationFailed(String),
 

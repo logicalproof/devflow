@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::time::Duration;
 
 use sysinfo::Disks;
 
@@ -21,6 +22,8 @@ pub fn spawn(
     min_disk_mb: u64,
     initial_command: Option<&str>,
     enable_compose: bool,
+    compose_health_timeout_secs: u64,
+    compose_post_start: &[String],
 ) -> Result<WorkerState> {
     // 1. Acquire lock
     let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
@@ -78,6 +81,16 @@ pub fn spawn(
             }
         };
 
+        // 5b½. Check ports are actually available on the host
+        if let Err(e) = ports::check_ports_available(&allocated) {
+            let _ = ports::release(devflow_dir, task_name);
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if branch_created {
+                let _ = branch::delete_branch(git, branch_name);
+            }
+            return Err(e);
+        }
+
         // 5c. Generate compose file
         let cf = match compose_mgr::generate_compose_file(
             devflow_dir,
@@ -106,6 +119,31 @@ pub fn spawn(
                 let _ = branch::delete_branch(git, branch_name);
             }
             return Err(e);
+        }
+
+        // 5e. Wait for containers to be healthy
+        if let Err(e) = compose_mgr::wait_healthy(
+            &cf,
+            Duration::from_secs(compose_health_timeout_secs),
+        ) {
+            let _ = compose_mgr::down(&cf);
+            let _ = ports::release(devflow_dir, task_name);
+            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = std::fs::remove_dir_all(compose_dir);
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if branch_created {
+                let _ = branch::delete_branch(git, branch_name);
+            }
+            return Err(e);
+        }
+
+        // 5f. Run post-start hooks (warn on failure, don't tear down)
+        for hook in compose_post_start {
+            println!("Running post-start hook: {hook}");
+            match compose_mgr::exec(&cf, "app", hook) {
+                Ok(()) => println!("  Hook succeeded: {hook}"),
+                Err(e) => eprintln!("  Warning: hook failed: {e}"),
+            }
         }
 
         compose_file = Some(cf);

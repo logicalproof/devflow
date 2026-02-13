@@ -3,8 +3,10 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use std::net::TcpListener;
+
 use crate::config::lock::FileLock;
-use crate::error::Result;
+use crate::error::{DevflowError, Result};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AllocatedPorts {
@@ -70,6 +72,26 @@ pub fn release(devflow_dir: &Path, worker_name: &str) -> Result<()> {
     let mut registry = load_registry(&registry_path);
     registry.allocations.remove(worker_name);
     save_registry(&registry_path, &registry)?;
+
+    Ok(())
+}
+
+/// Check that all allocated ports are available before starting compose.
+pub fn check_ports_available(ports: &AllocatedPorts) -> Result<()> {
+    let checks = [
+        (ports.app, "app"),
+        (ports.db, "db"),
+        (ports.redis, "redis"),
+    ];
+
+    for (port, service) in checks {
+        if TcpListener::bind(("0.0.0.0", port)).is_err() {
+            return Err(DevflowError::PortInUse {
+                port,
+                service: service.to_string(),
+            });
+        }
+    }
 
     Ok(())
 }

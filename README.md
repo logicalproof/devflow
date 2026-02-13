@@ -165,9 +165,15 @@ devflow worker monitor
 # => Active: 2/4
 # =>   ● my-feature (uptime: 1h 23m)
 # =>   ● fix-login (uptime: 0h 45m)
+
+# Manually clean up orphaned workers (containers, worktrees, state)
+devflow worker cleanup
+# => ! Found 1 orphaned worker(s):
+# =>   ● old-task branch:myapp/feature/old-task [compose stack running]
+# => ✓ Cleaned up 1 orphaned worker(s)
 ```
 
-Workers auto-detect and clean up orphans (e.g., if a tmux window was manually closed) on every spawn.
+Workers auto-detect and clean up orphans (e.g., if a tmux window was manually closed) on spawn, list, and monitor. Use `devflow worker cleanup` for on-demand cleanup.
 
 ### `devflow worktree`
 
@@ -292,6 +298,10 @@ default_branch: main
 tmux_session_name: devflow
 max_workers: 4
 min_disk_space_mb: 500
+compose_health_timeout_secs: 60   # seconds to wait for containers to be ready (default: 60)
+compose_post_start:               # commands to run in the "app" service after compose up
+  - "bin/rails db:prepare"
+  - "bin/rails assets:precompile"
 ```
 
 ## Project Layout
@@ -364,7 +374,10 @@ The project name comes from the directory name (set during `devflow init`).
 - **File locking** prevents two workers from spawning for the same task simultaneously
 - **Disk space check** requires 500MB free before creating a worktree (configurable)
 - **Atomic rollback** — if any step of worker spawn fails, all previous steps are reversed (including compose teardown and port release)
-- **Orphan cleanup** — workers whose tmux windows disappeared are detected and cleaned up automatically (compose stacks are torn down too)
+- **Port conflict pre-check** — before starting a compose stack, devflow verifies that allocated ports (app/db/redis) are actually free on the host; if a port is in use, you get a clear error instead of a cryptic Docker failure
+- **Orphan cleanup** — workers whose tmux windows disappeared are detected and cleaned up automatically on spawn, list, monitor, and via `devflow worker cleanup`
+- **Health check waiting** — after `compose up`, devflow polls container status until all services are running (and healthy, if a healthcheck is defined), with a configurable timeout (default 60s)
+- **Post-start hooks** — run commands inside the `app` container after health checks pass (e.g., `db:prepare`); failures warn but don't tear down the stack
 - **No force operations** — worktree removal uses `git worktree remove --force` but branch deletion is safe (won't delete unmerged branches that git protects)
 - **Port allocation locking** — `ports.json` is protected by a file lock so concurrent `--compose` spawns never collide on ports
 - **Clean compose teardown** — `worker kill` runs `docker compose down -v` to stop containers and remove volumes before cleaning up other resources

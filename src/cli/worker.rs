@@ -35,6 +35,8 @@ pub enum WorkerCommands {
     },
     /// Show worker status and resource usage
     Monitor,
+    /// Clean up orphaned workers (containers, worktrees, state)
+    Cleanup,
 }
 
 pub async fn run(cmd: WorkerCommands) -> Result<()> {
@@ -48,6 +50,7 @@ pub async fn run(cmd: WorkerCommands) -> Result<()> {
         WorkerCommands::List => list().await,
         WorkerCommands::Kill { task } => kill(&task).await,
         WorkerCommands::Monitor => monitor().await,
+        WorkerCommands::Cleanup => cleanup_cmd().await,
     }
 }
 
@@ -125,6 +128,8 @@ async fn spawn(
         local.min_disk_space_mb,
         initial_command.as_deref(),
         enable_compose,
+        local.compose_health_timeout_secs,
+        &local.compose_post_start,
     )?;
 
     println!(
@@ -154,6 +159,8 @@ async fn spawn(
 async fn list() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
+    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
+    let _ = cleanup_orphans(&devflow_dir, &git, &local.tmux_session_name);
 
     let workers = orch_worker::list_workers(&devflow_dir)?;
 
@@ -211,6 +218,7 @@ async fn monitor() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
     let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
+    let _ = cleanup_orphans(&devflow_dir, &git, &local.tmux_session_name);
 
     let workers = orch_worker::list_workers(&devflow_dir)?;
 
@@ -244,6 +252,52 @@ async fn monitor() -> Result<()> {
             }
         }
     }
+
+    Ok(())
+}
+
+async fn cleanup_cmd() -> Result<()> {
+    let git = GitRepo::discover()?;
+    let devflow_dir = ensure_devflow(&git)?;
+    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
+
+    let orphans = cleanup::find_orphans(&devflow_dir, &local.tmux_session_name)?;
+
+    if orphans.is_empty() {
+        println!("No orphaned workers found.");
+        return Ok(());
+    }
+
+    println!(
+        "{} Found {} orphaned worker(s):",
+        style("!").yellow(),
+        orphans.len()
+    );
+    for o in &orphans {
+        let compose_info = if o.compose_file.is_some() {
+            " [compose stack running]"
+        } else {
+            ""
+        };
+        println!(
+            "  {} {} branch:{} worktree:{}{}",
+            style("●").red(),
+            o.task_name,
+            o.branch,
+            o.worktree_path.display(),
+            compose_info
+        );
+    }
+
+    for o in &orphans {
+        cleanup::cleanup_orphan(&devflow_dir, &git.root, o)?;
+    }
+
+    println!(
+        "{} Cleaned up {} orphaned worker(s)",
+        style("✓").green().bold(),
+        orphans.len()
+    );
 
     Ok(())
 }
