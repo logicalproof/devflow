@@ -196,18 +196,25 @@ devflow worktree prune
 
 ### `devflow tmux`
 
-Manage the shared tmux session where worker windows live.
+Manage tmux sessions — both the shared hub and per-worker workspace sessions.
 
 ```bash
-# Attach to the devflow session
+# Attach to the devflow hub session
 devflow tmux attach
 
-# Show session status
+# Attach to a worker's dedicated workspace session
+devflow tmux attach-worker add-auth
+# => Falls back to hub session if no workspace exists
+
+# Show session status (hub + workspace sessions)
 devflow tmux status
-# => ✓ Session 'devflow' with 3 window(s):
+# => ✓ Hub session 'devflow' with 3 window(s):
 # =>   - add-auth
 # =>   - fix-nav
 # =>   - refactor-db
+# =>
+# => Worker workspace sessions:
+# =>   ● devflow-add-auth [active] (2 windows)
 
 # Apply a layout to the current window
 devflow tmux layout tiled
@@ -215,9 +222,74 @@ devflow tmux layout even-horizontal
 devflow tmux layout even-vertical
 devflow tmux layout main-horizontal
 devflow tmux layout main-vertical
+
+# Generate a default workspace template
+devflow tmux init-template
+# => ✓ Created tmux workspace template at .devflow/tmux-layout.json
 ```
 
-The session is named `devflow` by default (configurable in `.devflow/local.yml`). It's created automatically when you spawn the first worker.
+The hub session is named `devflow` by default (configurable in `.devflow/local.yml`). It's created automatically when you spawn the first worker.
+
+### Workspace Templates
+
+Workspace templates let you define a multi-window, multi-pane tmux layout that gets created for each worker. This is useful when you need dedicated windows for logs, servers, editors, and shells.
+
+**How it works:**
+- **Hub session** (`devflow`) — one window per worker, always created (existing behavior)
+- **Per-worker session** (`devflow-<task>`) — full workspace from template, only when `.devflow/tmux-layout.json` exists
+
+Generate a starter template:
+
+```bash
+devflow tmux init-template
+```
+
+This creates `.devflow/tmux-layout.json` with a Rails development layout. Edit it to match your workflow:
+
+```json
+{
+  "windows": [
+    {
+      "name": "server",
+      "layout": "tiled",
+      "panes": [
+        { "command": "tail -f log/development.log" },
+        { "command": "bundle exec puma -p {{APP_PORT}}" },
+        { "command": "bundle exec sidekiq" },
+        {}
+      ]
+    },
+    {
+      "name": "editor",
+      "layout": "main-vertical",
+      "panes": [
+        { "command": "vim", "focus": true },
+        {},
+        { "command": "claude" },
+        { "command": "rails console" }
+      ]
+    }
+  ]
+}
+```
+
+**Template variables** (replaced at spawn time):
+| Variable | Value |
+|----------|-------|
+| `{{WORKTREE_PATH}}` | Absolute path to worker's git worktree |
+| `{{WORKER_NAME}}` | Task name |
+| `{{APP_PORT}}` | Allocated app port (with `--compose`) |
+| `{{DB_PORT}}` | Allocated database port (with `--compose`) |
+| `{{REDIS_PORT}}` | Allocated Redis port (with `--compose`) |
+
+**Pane options:**
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `command` | string | none | Command to run in the pane |
+| `directory` | string | worktree path | Working directory for the pane |
+| `focus` | bool | false | Whether to focus this pane after creation |
+
+If the template file is absent, workers get the original single-window behavior.
 
 ### `devflow container`
 
@@ -311,6 +383,7 @@ compose_post_start:               # commands to run in the "app" service after c
   config.yml          # Project configuration
   local.yml           # Local user config
   tasks.json          # Task database
+  tmux-layout.json    # Workspace template (optional, for per-worker sessions)
   compose-template.yml # Docker Compose template (optional, for --compose)
   ports.json          # Port allocation registry (for --compose)
   worktrees/           # Git worktrees (one per worker)

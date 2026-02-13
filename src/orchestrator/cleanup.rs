@@ -2,7 +2,7 @@ use std::path::Path;
 
 use crate::compose::{manager as compose_mgr, ports};
 use crate::error::Result;
-use crate::tmux::session;
+use crate::tmux::{session, workspace};
 
 use super::state::WorkerState;
 
@@ -38,6 +38,11 @@ pub fn cleanup_orphan(devflow_dir: &Path, repo_root: &Path, state: &WorkerState)
         let _ = ports::release(devflow_dir, &state.task_name);
         let compose_dir = devflow_dir.join("compose").join(&state.task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
+    }
+
+    // Tear down per-worker tmux session if present
+    if let Some(ref ws) = state.tmux_session {
+        workspace::destroy_worker_session(ws);
     }
 
     // Remove worktree if it exists

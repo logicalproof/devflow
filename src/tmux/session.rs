@@ -137,6 +137,82 @@ pub fn send_keys(session_name: &str, window_name: &str, command: &str) -> Result
     Ok(())
 }
 
+/// Split a window to create a new pane
+pub fn split_window(target: &str, working_dir: &Path) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["split-window", "-t", target, "-v", "-c"])
+        .arg(working_dir)
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to split window: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Send keys to a specific pane target (e.g., "session:window.0")
+pub fn send_keys_to_pane(target: &str, command: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", target, command, "Enter"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to send keys to pane: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Select (focus) a specific pane
+pub fn select_pane(target: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["select-pane", "-t", target])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to select pane: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Apply a layout to a window (e.g., tiled, main-vertical)
+pub fn apply_window_layout(target: &str, layout: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["select-layout", "-t", target, layout])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to apply layout: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
+/// Kill an entire tmux session
+pub fn kill_session(session_name: &str) -> Result<()> {
+    let output = Command::new("tmux")
+        .args(["kill-session", "-t", session_name])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to kill session: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
 /// List windows in a session
 pub fn list_windows(session_name: &str) -> Result<Vec<String>> {
     let output = Command::new("tmux")

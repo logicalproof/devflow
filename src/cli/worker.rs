@@ -141,6 +141,14 @@ async fn spawn(
     println!("  Worktree: {}", state.worktree_path.display());
     println!("  Tmux:     {}:{}", local.tmux_session_name, state.tmux_window);
 
+    if let Some(ref ws) = state.tmux_session {
+        println!("  Workspace: {ws}");
+        println!(
+            "\nAttach to workspace: {}",
+            style(format!("tmux attach -t {ws}")).cyan()
+        );
+    }
+
     if let Some(ref ports) = state.compose_ports {
         println!("  Compose stack:");
         println!("    App:   http://localhost:{}", ports.app);
@@ -148,10 +156,12 @@ async fn spawn(
         println!("    Redis: localhost:{}", ports.redis);
     }
 
-    println!(
-        "\nAttach with: {}",
-        style(format!("devflow tmux attach")).cyan()
-    );
+    if state.tmux_session.is_none() {
+        println!(
+            "\nAttach with: {}",
+            style(format!("devflow tmux attach")).cyan()
+        );
+    }
 
     Ok(())
 }

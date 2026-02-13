@@ -19,6 +19,8 @@ pub struct WorkerState {
     pub compose_file: Option<PathBuf>,
     #[serde(default)]
     pub compose_ports: Option<AllocatedPorts>,
+    #[serde(default)]
+    pub tmux_session: Option<String>,
 }
 
 impl WorkerState {
