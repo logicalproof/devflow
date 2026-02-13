@@ -1,4 +1,5 @@
 mod cli;
+mod compose;
 mod config;
 mod container;
 mod detector;

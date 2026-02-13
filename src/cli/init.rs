@@ -22,7 +22,7 @@ pub async fn run() -> Result<()> {
     }
 
     // Create directory structure
-    for dir in &["worktrees", "workers", "locks", "tasks"] {
+    for dir in &["worktrees", "workers", "locks", "tasks", "compose"] {
         fs::create_dir_all(devflow_dir.join(dir))?;
     }
 

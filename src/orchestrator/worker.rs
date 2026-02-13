@@ -2,6 +2,7 @@ use std::path::Path;
 
 use sysinfo::Disks;
 
+use crate::compose::{manager as compose_mgr, ports};
 use crate::config::lock::FileLock;
 use crate::error::{DevflowError, Result};
 use crate::git::{branch, repo::GitRepo, worktree};
@@ -9,7 +10,8 @@ use crate::tmux::session;
 
 use super::state::WorkerState;
 
-/// Spawn a new worker: create branch, worktree, tmux window, save state
+/// Spawn a new worker: create branch, worktree, optionally start compose stack,
+/// create tmux window, save state.
 pub fn spawn(
     git: &GitRepo,
     devflow_dir: &Path,
@@ -17,6 +19,8 @@ pub fn spawn(
     branch_name: &str,
     tmux_session: &str,
     min_disk_mb: u64,
+    initial_command: Option<&str>,
+    enable_compose: bool,
 ) -> Result<WorkerState> {
     // 1. Acquire lock
     let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
@@ -48,9 +52,76 @@ pub fn spawn(
         return Err(e);
     }
 
+    // 5a-5d. Optionally start compose stack
+    let mut compose_file = None;
+    let mut compose_ports = None;
+
+    if enable_compose {
+        // 5a. Check docker compose is available
+        if let Err(e) = compose_mgr::check_available() {
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if branch_created {
+                let _ = branch::delete_branch(git, branch_name);
+            }
+            return Err(e);
+        }
+
+        // 5b. Allocate ports
+        let allocated = match ports::allocate(devflow_dir, task_name) {
+            Ok(p) => p,
+            Err(e) => {
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                if branch_created {
+                    let _ = branch::delete_branch(git, branch_name);
+                }
+                return Err(e);
+            }
+        };
+
+        // 5c. Generate compose file
+        let cf = match compose_mgr::generate_compose_file(
+            devflow_dir,
+            task_name,
+            &worktree_path,
+            &allocated,
+        ) {
+            Ok(cf) => cf,
+            Err(e) => {
+                let _ = ports::release(devflow_dir, task_name);
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                if branch_created {
+                    let _ = branch::delete_branch(git, branch_name);
+                }
+                return Err(e);
+            }
+        };
+
+        // 5d. Start compose stack
+        if let Err(e) = compose_mgr::up(&cf) {
+            let _ = ports::release(devflow_dir, task_name);
+            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = std::fs::remove_dir_all(compose_dir);
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if branch_created {
+                let _ = branch::delete_branch(git, branch_name);
+            }
+            return Err(e);
+        }
+
+        compose_file = Some(cf);
+        compose_ports = Some(allocated);
+    }
+
     // 6. Create tmux window
     let tmux_window = task_name.to_string();
     if let Err(e) = session::create_window(tmux_session, &tmux_window, &worktree_path) {
+        // Rollback compose if it was started
+        if let Some(ref cf) = compose_file {
+            let _ = compose_mgr::down(cf);
+            let _ = ports::release(devflow_dir, task_name);
+            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = std::fs::remove_dir_all(compose_dir);
+        }
         let _ = worktree::remove_worktree(&git.root, &worktree_path);
         if branch_created {
             let _ = branch::delete_branch(git, branch_name);
@@ -58,7 +129,14 @@ pub fn spawn(
         return Err(e);
     }
 
-    // 7. Save worker state
+    // 7. Send initial command if provided
+    if let Some(cmd) = initial_command {
+        if let Err(e) = session::send_keys(tmux_session, &tmux_window, cmd) {
+            eprintln!("Warning: failed to send initial command: {e}");
+        }
+    }
+
+    // 8. Save worker state
     let state = WorkerState {
         task_name: task_name.to_string(),
         branch: branch_name.to_string(),
@@ -67,9 +145,18 @@ pub fn spawn(
         container_id: None,
         created_at: chrono::Utc::now(),
         pid: None,
+        compose_file,
+        compose_ports,
     };
 
     if let Err(e) = state.save(&state_path) {
+        // Rollback compose if it was started
+        if let Some(ref cf) = state.compose_file {
+            let _ = compose_mgr::down(cf);
+            let _ = ports::release(devflow_dir, task_name);
+            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = std::fs::remove_dir_all(compose_dir);
+        }
         let _ = session::kill_window(tmux_session, &tmux_window);
         let _ = worktree::remove_worktree(&git.root, &worktree_path);
         if branch_created {
@@ -81,7 +168,7 @@ pub fn spawn(
     Ok(state)
 }
 
-/// Kill a worker: remove tmux window, worktree, branch, and state file
+/// Kill a worker: tear down compose stack, remove tmux window, worktree, branch, and state file
 pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, tmux_session: &str) -> Result<()> {
     let state_path = WorkerState::state_path(devflow_dir, task_name);
     if !state_path.exists() {
@@ -89,6 +176,16 @@ pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, tmux_session: &s
     }
 
     let state = WorkerState::load(&state_path)?;
+
+    // Tear down compose stack if present
+    if let Some(ref cf) = state.compose_file {
+        if let Err(e) = compose_mgr::down(cf) {
+            eprintln!("Warning: compose down failed: {e}");
+        }
+        let _ = ports::release(devflow_dir, task_name);
+        let compose_dir = devflow_dir.join("compose").join(task_name);
+        let _ = std::fs::remove_dir_all(compose_dir);
+    }
 
     // Kill tmux window (ignore errors - may already be gone)
     let _ = session::kill_window(tmux_session, &state.tmux_window);

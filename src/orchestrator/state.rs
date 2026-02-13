@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::compose::ports::AllocatedPorts;
 use crate::error::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -14,6 +15,10 @@ pub struct WorkerState {
     pub container_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub pid: Option<u32>,
+    #[serde(default)]
+    pub compose_file: Option<PathBuf>,
+    #[serde(default)]
+    pub compose_ports: Option<AllocatedPorts>,
 }
 
 impl WorkerState {

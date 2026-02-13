@@ -73,5 +73,28 @@ pub async fn run() -> Result<()> {
         style("devflow container build <name>").cyan()
     );
 
+    // Offer to generate compose template for per-worker stacks
+    let generate_compose = Confirm::new()
+        .with_prompt("Generate Docker Compose template for per-worker stacks?")
+        .default(true)
+        .interact()
+        .map_err(|e| DevflowError::Other(format!("Confirm cancelled: {e}")))?;
+
+    if generate_compose {
+        let template_content = crate::compose::template::default_rails_template();
+        let template_path = devflow_dir.join("compose-template.yml");
+        std::fs::write(&template_path, template_content)?;
+
+        println!(
+            "{} Wrote {}",
+            style("✓").green().bold(),
+            template_path.display()
+        );
+        println!(
+            "Use with: {}",
+            style("devflow worker spawn <task> --compose").cyan()
+        );
+    }
+
     Ok(())
 }

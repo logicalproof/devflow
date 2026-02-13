@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::Subcommand;
 use console::style;
 
@@ -14,6 +16,15 @@ pub enum WorkerCommands {
     Spawn {
         /// Task name to spawn worker for
         task: String,
+        /// Launch claude with this prompt in the worker's tmux window
+        #[arg(long)]
+        prompt: Option<String>,
+        /// Launch claude with the prompt read from this file
+        #[arg(long, conflicts_with = "prompt")]
+        prompt_file: Option<PathBuf>,
+        /// Start a Docker Compose stack for this worker (isolated app/db/redis)
+        #[arg(long)]
+        compose: bool,
     },
     /// List all active workers
     List,
@@ -28,7 +39,12 @@ pub enum WorkerCommands {
 
 pub async fn run(cmd: WorkerCommands) -> Result<()> {
     match cmd {
-        WorkerCommands::Spawn { task } => spawn(&task).await,
+        WorkerCommands::Spawn {
+            task,
+            prompt,
+            prompt_file,
+            compose,
+        } => spawn(&task, prompt, prompt_file, compose).await,
         WorkerCommands::List => list().await,
         WorkerCommands::Kill { task } => kill(&task).await,
         WorkerCommands::Monitor => monitor().await,
@@ -43,7 +59,12 @@ fn ensure_devflow(git: &GitRepo) -> Result<std::path::PathBuf> {
     Ok(devflow_dir)
 }
 
-async fn spawn(task_name: &str) -> Result<()> {
+async fn spawn(
+    task_name: &str,
+    prompt: Option<String>,
+    prompt_file: Option<PathBuf>,
+    enable_compose: bool,
+) -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
 
@@ -76,6 +97,24 @@ async fn spawn(task_name: &str) -> Result<()> {
     let tasks_json = serde_json::to_string_pretty(&tasks)?;
     std::fs::write(&tasks_path, tasks_json)?;
 
+    // Resolve prompt text
+    let prompt_text = match (prompt, prompt_file) {
+        (Some(p), _) => Some(p),
+        (_, Some(path)) => {
+            let text = std::fs::read_to_string(&path).map_err(|e| {
+                DevflowError::Other(format!("Failed to read prompt file '{}': {e}", path.display()))
+            })?;
+            Some(text)
+        }
+        _ => None,
+    };
+
+    // Build claude command if prompt provided
+    let initial_command = prompt_text.as_ref().map(|text: &String| {
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        format!("claude --prompt \"{escaped}\"")
+    });
+
     // Spawn the worker
     let state = orch_worker::spawn(
         &git,
@@ -84,6 +123,8 @@ async fn spawn(task_name: &str) -> Result<()> {
         &branch_name,
         &local.tmux_session_name,
         local.min_disk_space_mb,
+        initial_command.as_deref(),
+        enable_compose,
     )?;
 
     println!(
@@ -94,6 +135,14 @@ async fn spawn(task_name: &str) -> Result<()> {
     println!("  Branch:   {}", state.branch);
     println!("  Worktree: {}", state.worktree_path.display());
     println!("  Tmux:     {}:{}", local.tmux_session_name, state.tmux_window);
+
+    if let Some(ref ports) = state.compose_ports {
+        println!("  Compose stack:");
+        println!("    App:   http://localhost:{}", ports.app);
+        println!("    DB:    localhost:{}", ports.db);
+        println!("    Redis: localhost:{}", ports.redis);
+    }
+
     println!(
         "\nAttach with: {}",
         style(format!("devflow tmux attach")).cyan()
@@ -121,13 +170,21 @@ async fn list() -> Result<()> {
         } else {
             style("orphaned").red()
         };
+
+        let compose_info = if let Some(ref ports) = w.compose_ports {
+            format!(" [compose: {}:{}:{}]", ports.app, ports.db, ports.redis)
+        } else {
+            String::new()
+        };
+
         println!(
-            "  {} {} [{}] branch:{} worktree:{}",
+            "  {} {} [{}] branch:{} worktree:{}{}",
             style("●").cyan(),
             w.task_name,
             status,
             w.branch,
-            w.worktree_path.display()
+            w.worktree_path.display(),
+            compose_info
         );
     }
 
@@ -179,6 +236,12 @@ async fn monitor() -> Result<()> {
             );
             println!("    Branch:   {}", w.branch);
             println!("    Worktree: {}", w.worktree_path.display());
+            if let Some(ref ports) = w.compose_ports {
+                println!(
+                    "    Compose:  app:{} db:{} redis:{}",
+                    ports.app, ports.db, ports.redis
+                );
+            }
         }
     }
 

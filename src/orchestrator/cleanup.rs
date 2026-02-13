@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use crate::compose::{manager as compose_mgr, ports};
 use crate::error::Result;
 use crate::tmux::session;
 
@@ -31,6 +32,14 @@ pub fn find_orphans(devflow_dir: &Path, tmux_session: &str) -> Result<Vec<Worker
 
 /// Clean up an orphaned worker's resources
 pub fn cleanup_orphan(devflow_dir: &Path, repo_root: &Path, state: &WorkerState) -> Result<()> {
+    // Tear down compose stack if present (best-effort)
+    if let Some(ref cf) = state.compose_file {
+        let _ = compose_mgr::down(cf);
+        let _ = ports::release(devflow_dir, &state.task_name);
+        let compose_dir = devflow_dir.join("compose").join(&state.task_name);
+        let _ = std::fs::remove_dir_all(compose_dir);
+    }
+
     // Remove worktree if it exists
     if state.worktree_path.exists() {
         let _ = crate::git::worktree::remove_worktree(repo_root, &state.worktree_path);

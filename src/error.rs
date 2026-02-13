@@ -65,6 +65,12 @@ pub enum DevflowError {
     #[error("Docker is not available")]
     DockerNotAvailable,
 
+    #[error("Docker Compose is not available. Install: https://docs.docker.com/compose/install/")]
+    ComposeNotAvailable,
+
+    #[error("Compose operation failed: {0}")]
+    ComposeOperationFailed(String),
+
     #[error("Tmux is not available")]
     TmuxNotAvailable,
 

@@ -121,6 +121,22 @@ pub fn attach_session(session_name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Send keys to a specific window in a session
+pub fn send_keys(session_name: &str, window_name: &str, command: &str) -> Result<()> {
+    let target = format!("{session_name}:{window_name}");
+    let output = Command::new("tmux")
+        .args(["send-keys", "-t", &target, command, "Enter"])
+        .output()?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(DevflowError::TmuxCommand(format!(
+            "Failed to send keys: {stderr}"
+        )));
+    }
+    Ok(())
+}
+
 /// List windows in a session
 pub fn list_windows(session_name: &str) -> Result<Vec<String>> {
     let output = Command::new("tmux")
