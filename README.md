@@ -10,6 +10,7 @@ The typical problem: you're waiting on Claude Code to finish a feature, but you 
 - **Git** (worktree support requires at least one commit in the repo)
 - **tmux** (worker windows live in a shared tmux session)
 - **Docker** (optional — only needed for container features)
+- **Docker Compose** (optional — only needed for `--compose` per-worker isolation)
 
 ## Installation
 
@@ -137,10 +138,21 @@ devflow worker spawn my-feature
 # =>   Worktree: /path/to/.devflow/worktrees/my-feature
 # =>   Tmux:     devflow:my-feature
 
+# Spawn with per-worker Docker Compose isolation (app + db + redis)
+devflow worker spawn my-feature --compose
+# => ✓ Worker spawned for task 'my-feature'
+# =>   Branch:   myapp/feature/my-feature
+# =>   Worktree: /path/to/.devflow/worktrees/my-feature
+# =>   Tmux:     devflow:my-feature
+# =>   Compose stack:
+# =>     App:   http://localhost:3001
+# =>     DB:    localhost:5433
+# =>     Redis: localhost:6380
+
 # List all active workers
 devflow worker list
 # => Active workers:
-# =>   ● my-feature [running] branch:myapp/feature/my-feature
+# =>   ● my-feature [running] branch:myapp/feature/my-feature [compose: 3001:5433:6380]
 
 # Kill a worker and clean up all its resources
 devflow worker kill my-feature
@@ -237,7 +249,7 @@ devflow containerize
 # => ✓ Wrote /path/to/Dockerfile.devflow
 ```
 
-Writes a `Dockerfile.devflow` to your project root and enables container support in the config.
+Writes a `Dockerfile.devflow` to your project root and enables container support in the config. The wizard also offers to generate a `compose-template.yml` for use with `--compose` per-worker stacks.
 
 ### `devflow commit`
 
@@ -289,12 +301,17 @@ min_disk_space_mb: 500
   config.yml          # Project configuration
   local.yml           # Local user config
   tasks.json          # Task database
+  compose-template.yml # Docker Compose template (optional, for --compose)
+  ports.json          # Port allocation registry (for --compose)
   worktrees/           # Git worktrees (one per worker)
     my-feature/        # Full checkout on its own branch
     fix-login/
   workers/             # Worker state files
     my-feature.json    # Branch, worktree path, tmux window, timestamps
     fix-login.json
+  compose/             # Per-worker compose files (for --compose)
+    my-feature/
+      docker-compose.yml
   locks/               # File locks (prevent concurrent spawns)
     my-feature.lock
 ```
@@ -346,6 +363,8 @@ The project name comes from the directory name (set during `devflow init`).
 
 - **File locking** prevents two workers from spawning for the same task simultaneously
 - **Disk space check** requires 500MB free before creating a worktree (configurable)
-- **Atomic rollback** — if any step of worker spawn fails, all previous steps are reversed
-- **Orphan cleanup** — workers whose tmux windows disappeared are detected and cleaned up automatically
+- **Atomic rollback** — if any step of worker spawn fails, all previous steps are reversed (including compose teardown and port release)
+- **Orphan cleanup** — workers whose tmux windows disappeared are detected and cleaned up automatically (compose stacks are torn down too)
 - **No force operations** — worktree removal uses `git worktree remove --force` but branch deletion is safe (won't delete unmerged branches that git protects)
+- **Port allocation locking** — `ports.json` is protected by a file lock so concurrent `--compose` spawns never collide on ports
+- **Clean compose teardown** — `worker kill` runs `docker compose down -v` to stop containers and remove volumes before cleaning up other resources
