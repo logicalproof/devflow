@@ -36,6 +36,11 @@ pub fn generate_compose_file(
     };
     let rendered = template::render(&tmpl, &vars);
 
+    // Auto-extract ARG directives from Dockerfile and inject as build args
+    let dockerfile_path = worktree_path.join("Dockerfile.devflow");
+    let build_args = template::extract_dockerfile_args(&dockerfile_path);
+    let rendered = template::inject_build_args(&rendered, &build_args);
+
     let compose_dir = devflow_dir.join("compose").join(worker_name);
     std::fs::create_dir_all(&compose_dir)?;
 

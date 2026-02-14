@@ -30,6 +30,63 @@ pub fn render(template: &str, vars: &TemplateVars) -> String {
         .replace("{{WORKTREE_PATH}}", vars.worktree_path)
 }
 
+/// Extract ARG names from a Dockerfile and format as compose build args.
+/// Each ARG becomes `- NAME=${NAME:-}` so Docker Compose resolves it from .env.
+pub fn extract_dockerfile_args(dockerfile_path: &Path) -> Vec<String> {
+    let contents = match std::fs::read_to_string(dockerfile_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+
+    contents
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.starts_with("ARG ") {
+                // Parse "ARG NAME" or "ARG NAME=default"
+                let rest = trimmed.strip_prefix("ARG ").unwrap().trim();
+                let name = rest.split(['=', ' ']).next().unwrap_or("").trim();
+                if !name.is_empty() {
+                    Some(name.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Inject build args into a rendered compose file after the `dockerfile:` line.
+pub fn inject_build_args(rendered: &str, args: &[String]) -> String {
+    if args.is_empty() {
+        return rendered.to_string();
+    }
+
+    let mut result = String::new();
+    let mut injected = false;
+
+    for line in rendered.lines() {
+        result.push_str(line);
+        result.push('\n');
+
+        // Inject after the `dockerfile:` line, matching its indentation
+        if !injected && line.trim().starts_with("dockerfile:") {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            result.push_str(indent);
+            result.push_str("args:\n");
+            for arg in args {
+                result.push_str(indent);
+                result.push_str(&format!("  - {arg}=${{{arg}:-}}\n"));
+            }
+            injected = true;
+        }
+    }
+
+    result
+}
+
 /// Built-in default Rails compose template.
 pub fn default_rails_template() -> &'static str {
     r#"services:
@@ -37,8 +94,6 @@ pub fn default_rails_template() -> &'static str {
     build:
       context: "{{WORKTREE_PATH}}"
       dockerfile: Dockerfile.devflow
-      args:
-        - BUNDLE_GITHUB__COM=${BUNDLE_GITHUB__COM:-}
     container_name: devflow-{{WORKER_NAME}}-app
     ports:
       - "{{APP_PORT}}:3000"
