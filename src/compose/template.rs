@@ -30,23 +30,37 @@ pub fn render(template: &str, vars: &TemplateVars) -> String {
         .replace("{{WORKTREE_PATH}}", vars.worktree_path)
 }
 
-/// Extract ARG names from a Dockerfile and format as compose build args.
-/// Each ARG becomes `- NAME=${NAME:-}` so Docker Compose resolves it from .env.
-pub fn extract_dockerfile_args(dockerfile_path: &Path) -> Vec<String> {
+/// Extract ARG names from a Dockerfile, returning only those that have a
+/// corresponding value in the .env file. ARGs with Dockerfile defaults but
+/// no .env entry are left alone so Docker uses the Dockerfile default.
+pub fn extract_dockerfile_args(dockerfile_path: &Path, env_path: &Path) -> Vec<String> {
     let contents = match std::fs::read_to_string(dockerfile_path) {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
+
+    // Parse .env file to find which vars are defined
+    let env_vars: std::collections::HashSet<String> = std::fs::read_to_string(env_path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                return None;
+            }
+            trimmed.split('=').next().map(|k| k.trim().to_string())
+        })
+        .collect();
 
     contents
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim();
             if trimmed.starts_with("ARG ") {
-                // Parse "ARG NAME" or "ARG NAME=default"
                 let rest = trimmed.strip_prefix("ARG ").unwrap().trim();
                 let name = rest.split(['=', ' ']).next().unwrap_or("").trim();
-                if !name.is_empty() {
+                // Only include if the .env file provides a value for this ARG
+                if !name.is_empty() && env_vars.contains(name) {
                     Some(name.to_string())
                 } else {
                     None

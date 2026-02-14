@@ -36,9 +36,10 @@ pub fn generate_compose_file(
     };
     let rendered = template::render(&tmpl, &vars);
 
-    // Auto-extract ARG directives from Dockerfile and inject as build args
+    // Auto-extract ARG directives from Dockerfile, only for vars defined in .env
     let dockerfile_path = worktree_path.join("Dockerfile.devflow");
-    let build_args = template::extract_dockerfile_args(&dockerfile_path);
+    let env_path = worktree_path.join(".env");
+    let build_args = template::extract_dockerfile_args(&dockerfile_path, &env_path);
     let rendered = template::inject_build_args(&rendered, &build_args);
 
     let compose_dir = devflow_dir.join("compose").join(worker_name);
