@@ -3,10 +3,11 @@ use std::path::PathBuf;
 use clap::Subcommand;
 use console::style;
 
+use crate::compose::db as compose_db;
 use crate::config::local::LocalConfig;
 use crate::error::{DevflowError, Result};
 use crate::git::repo::GitRepo;
-use crate::orchestrator::{cleanup, worker as orch_worker};
+use crate::orchestrator::{cleanup, state::WorkerState, worker as orch_worker};
 
 use super::task::{self, TaskState};
 
@@ -25,6 +26,12 @@ pub enum WorkerCommands {
         /// Start a Docker Compose stack for this worker (isolated app/db/redis)
         #[arg(long)]
         compose: bool,
+        /// Clone the host's development database into the worker instead of running db:prepare
+        #[arg(long, requires = "compose")]
+        db_clone: bool,
+        /// Source database URL for --db-clone (default: auto-detect from config/database.yml)
+        #[arg(long, requires = "db_clone")]
+        db_source: Option<String>,
     },
     /// List all active workers
     List,
@@ -37,6 +44,14 @@ pub enum WorkerCommands {
     Monitor,
     /// Clean up orphaned workers (containers, worktrees, state)
     Cleanup,
+    /// Clone the host database into a running worker's compose stack
+    DbClone {
+        /// Task name of the worker
+        task: String,
+        /// Source database URL (default: auto-detect from config/database.yml)
+        #[arg(long)]
+        source: Option<String>,
+    },
 }
 
 pub async fn run(cmd: WorkerCommands) -> Result<()> {
@@ -46,11 +61,14 @@ pub async fn run(cmd: WorkerCommands) -> Result<()> {
             prompt,
             prompt_file,
             compose,
-        } => spawn(&task, prompt, prompt_file, compose).await,
+            db_clone,
+            db_source,
+        } => spawn(&task, prompt, prompt_file, compose, db_clone, db_source).await,
         WorkerCommands::List => list().await,
         WorkerCommands::Kill { task } => kill(&task).await,
         WorkerCommands::Monitor => monitor().await,
         WorkerCommands::Cleanup => cleanup_cmd().await,
+        WorkerCommands::DbClone { task, source } => db_clone_cmd(&task, source).await,
     }
 }
 
@@ -67,6 +85,8 @@ async fn spawn(
     prompt: Option<String>,
     prompt_file: Option<PathBuf>,
     enable_compose: bool,
+    db_clone: bool,
+    db_source: Option<String>,
 ) -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
@@ -118,6 +138,9 @@ async fn spawn(
         format!("claude --prompt \"{escaped}\"")
     });
 
+    // Resolve db_source: CLI flag > local.yml config > auto-detect (handled in orchestrator)
+    let resolved_db_source = db_source.or(local.compose_db_source);
+
     // Spawn the worker
     let state = orch_worker::spawn(
         &git,
@@ -130,6 +153,8 @@ async fn spawn(
         enable_compose,
         local.compose_health_timeout_secs,
         &local.compose_post_start,
+        db_clone,
+        resolved_db_source.as_deref(),
     )?;
 
     println!(
@@ -307,6 +332,48 @@ async fn cleanup_cmd() -> Result<()> {
         "{} Cleaned up {} orphaned worker(s)",
         style("✓").green().bold(),
         orphans.len()
+    );
+
+    Ok(())
+}
+
+async fn db_clone_cmd(task_name: &str, source: Option<String>) -> Result<()> {
+    let git = GitRepo::discover()?;
+    let devflow_dir = ensure_devflow(&git)?;
+    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
+
+    // Load worker state
+    let state_path = WorkerState::state_path(&devflow_dir, task_name);
+    if !state_path.exists() {
+        return Err(DevflowError::WorkerNotFound(task_name.to_string()));
+    }
+    let state = WorkerState::load(&state_path)?;
+
+    // Verify worker has a compose stack
+    let compose_file = state.compose_file.as_ref().ok_or_else(|| {
+        DevflowError::Other(format!(
+            "Worker '{task_name}' was not started with --compose. \
+             Database cloning requires a compose stack."
+        ))
+    })?;
+
+    // Resolve source: CLI flag > config > auto-detect from worktree
+    let source_url = if let Some(src) = source {
+        src
+    } else if let Some(ref src) = local.compose_db_source {
+        println!("Using configured source: {src}");
+        src.clone()
+    } else {
+        let url = compose_db::detect_source_db(&state.worktree_path)?;
+        println!("Auto-detected source database: {url}");
+        url
+    };
+
+    compose_db::clone_database(compose_file, &source_url, task_name)?;
+
+    println!(
+        "{} Database cloned into worker '{task_name}'",
+        style("✓").green().bold(),
     );
 
     Ok(())

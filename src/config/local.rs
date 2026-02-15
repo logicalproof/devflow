@@ -16,6 +16,9 @@ pub struct LocalConfig {
     pub compose_health_timeout_secs: u64,
     #[serde(default)]
     pub compose_post_start: Vec<String>,
+    /// Default source database URL for `--db-clone` (e.g., postgres://localhost:5432/Reportal_development)
+    #[serde(default)]
+    pub compose_db_source: Option<String>,
 }
 
 fn default_compose_health_timeout_secs() -> u64 {
@@ -45,6 +48,7 @@ impl LocalConfig {
             min_disk_space_mb: 500,
             compose_health_timeout_secs: default_compose_health_timeout_secs(),
             compose_post_start: Vec::new(),
+            compose_db_source: None,
         }
     }
 }

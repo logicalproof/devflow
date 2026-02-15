@@ -3,8 +3,11 @@ use std::time::Duration;
 
 use sysinfo::Disks;
 
-use crate::compose::{manager as compose_mgr, ports};
+use crate::claude_md;
+use crate::cli::task as cli_task;
+use crate::compose::{db as compose_db, manager as compose_mgr, ports};
 use crate::config::lock::FileLock;
+use crate::config::project::ProjectConfig;
 use crate::error::{DevflowError, Result};
 use crate::git::{branch, repo::GitRepo, worktree};
 use crate::tmux::{session, workspace};
@@ -24,6 +27,8 @@ pub fn spawn(
     enable_compose: bool,
     compose_health_timeout_secs: u64,
     compose_post_start: &[String],
+    db_clone: bool,
+    db_source: Option<&str>,
 ) -> Result<WorkerState> {
     // 1. Acquire lock
     let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
@@ -55,13 +60,20 @@ pub fn spawn(
         return Err(e);
     }
 
-    // 5½. Copy essential files into worktree if they exist in repo root but not worktree
+    // 5½. Copy essential files into worktree from repo root.
+    // Always overwrite: the repo root may have edits not yet committed to the branch,
+    // and the worktree's git checkout would have a stale version.
     for filename in &["Dockerfile.devflow", ".env"] {
         let repo_file = git.root.join(filename);
         let worktree_file = worktree_path.join(filename);
-        if repo_file.exists() && !worktree_file.exists() {
+        if repo_file.exists() {
             let _ = std::fs::copy(&repo_file, &worktree_file);
         }
+    }
+
+    // 5½b. Create common Rails tmp directories (gitignored, so missing in worktrees)
+    for dir in &["tmp/pids", "tmp/cache", "tmp/sockets", "log"] {
+        let _ = std::fs::create_dir_all(worktree_path.join(dir));
     }
 
     // Warn if .env exists but may not be gitignored
@@ -160,6 +172,36 @@ pub fn spawn(
             return Err(e);
         }
 
+        // 5e½. Database setup (non-fatal: warn on failure, don't tear down)
+        if db_clone {
+            // Resolve source: explicit flag > config > auto-detect from worktree
+            let source = if let Some(src) = db_source {
+                src.to_string()
+            } else {
+                match compose_db::detect_source_db(&worktree_path) {
+                    Ok(url) => {
+                        println!("Auto-detected source database: {url}");
+                        url
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: could not detect source database: {e}");
+                        eprintln!("  Use --db-source to specify explicitly, or set compose_db_source in local.yml");
+                        String::new()
+                    }
+                }
+            };
+
+            if !source.is_empty() {
+                if let Err(e) = compose_db::clone_database(&cf, &source, task_name) {
+                    eprintln!("Warning: database clone failed: {e}");
+                    eprintln!("  The worker is running but the database may be empty.");
+                    eprintln!("  You can retry with: devflow worker db-clone {task_name}");
+                }
+            }
+        } else {
+            compose_db::setup_database(&cf);
+        }
+
         // 5f. Run post-start hooks (warn on failure, don't tear down)
         for hook in compose_post_start {
             println!("Running post-start hook: {hook}");
@@ -171,6 +213,55 @@ pub fn spawn(
 
         compose_file = Some(cf);
         compose_ports = Some(allocated);
+    }
+
+    // 5g. Generate CLAUDE.md in worktree (non-fatal)
+    {
+        let config_path = devflow_dir.join("config.yml");
+        let project_name = ProjectConfig::load(&config_path)
+            .map(|c| c.project_name)
+            .unwrap_or_default();
+        let detected_types = ProjectConfig::load(&config_path)
+            .map(|c| c.detected_types.join(", "))
+            .unwrap_or_default();
+        let task_type = cli_task::load_tasks(devflow_dir)
+            .ok()
+            .and_then(|tasks| {
+                tasks
+                    .iter()
+                    .find(|t| t.name == task_name)
+                    .map(|t| t.task_type.clone())
+            })
+            .unwrap_or_default();
+
+        let compose_file_str = compose_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
+        let compose_project_str = compose_file
+            .as_ref()
+            .map(|p| compose_mgr::project_name(p))
+            .unwrap_or_default();
+
+        let vars = claude_md::ClaudeMdVars {
+            worktree_path: &worktree_path.to_string_lossy(),
+            worker_name: task_name,
+            branch_name,
+            project_name: &project_name,
+            task_type: &task_type,
+            detected_types: &detected_types,
+            compose_enabled: compose_file.is_some(),
+            compose_file: &compose_file_str,
+            compose_project: &compose_project_str,
+            app_port: compose_ports.as_ref().map(|p| p.app).unwrap_or(3000),
+            db_port: compose_ports.as_ref().map(|p| p.db).unwrap_or(5432),
+            redis_port: compose_ports.as_ref().map(|p| p.redis).unwrap_or(6379),
+        };
+
+        match claude_md::generate(&worktree_path, devflow_dir, &vars) {
+            Ok(()) => println!("Generated CLAUDE.md in worktree"),
+            Err(e) => eprintln!("Warning: failed to generate CLAUDE.md: {e}"),
+        }
     }
 
     // 6a. Create hub tmux window (always)
@@ -201,11 +292,12 @@ pub fn spawn(
             app_port: compose_ports.as_ref().map(|p| p.app),
             db_port: compose_ports.as_ref().map(|p| p.db),
             redis_port: compose_ports.as_ref().map(|p| p.redis),
+            compose_file: compose_file.as_deref(),
         };
         let rendered = workspace::render_template(template, &vars);
         let ws_name = workspace::worker_session_name(tmux_session, task_name);
 
-        if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path) {
+        if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path, compose_file.as_deref()) {
             // Rollback partial session
             workspace::destroy_worker_session(&ws_name);
             let _ = session::kill_window(tmux_session, &tmux_window);
