@@ -67,10 +67,14 @@ pub fn spawn(
     // 5½. Copy essential files into worktree from repo root.
     // Always overwrite: the repo root may have edits not yet committed to the branch,
     // and the worktree's git checkout would have a stale version.
-    for filename in &["Dockerfile.dev", "Dockerfile.devflow", ".env"] {
+    for filename in &["Dockerfile.dev", "Dockerfile.devflow", ".env", "config/master.key"] {
         let repo_file = git.root.join(filename);
         let worktree_file = worktree_path.join(filename);
         if repo_file.exists() {
+            // Ensure parent directory exists (for nested paths like config/master.key)
+            if let Some(parent) = worktree_file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
             let _ = std::fs::copy(&repo_file, &worktree_file);
         }
     }
