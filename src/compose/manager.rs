@@ -27,7 +27,14 @@ pub fn generate_compose_file(
     worktree_path: &Path,
     ports: &AllocatedPorts,
 ) -> Result<PathBuf> {
-    let tmpl = template::load_or_default(devflow_dir)?;
+    let (tmpl, is_custom) = template::load_or_default(devflow_dir)?;
+
+    if is_custom {
+        println!(
+            "  Using custom compose template: {}",
+            devflow_dir.join("compose-template.yml").display()
+        );
+    }
 
     let vars = TemplateVars {
         worker_name,
@@ -40,18 +47,53 @@ pub fn generate_compose_file(
     let dockerfile_path = worktree_path.join("Dockerfile.devflow");
     let env_path = worktree_path.join(".env");
     let build_args = template::extract_dockerfile_args(&dockerfile_path, &env_path);
-    let rendered = template::inject_build_args(&rendered, &build_args);
+
+    if !build_args.is_empty() {
+        println!("  Injecting build args from Dockerfile + .env: {}", build_args.join(", "));
+    }
+
+    let (rendered, injected) = template::inject_build_args(&rendered, &build_args);
+
+    if !build_args.is_empty() && !injected {
+        eprintln!(
+            "Warning: Found build args {:?} but could not inject into compose template \
+             (no 'dockerfile:' or 'context:' line found). \
+             Add them manually to your compose-template.yml under build: args:",
+            build_args
+        );
+    }
+
+    // Auto-extract build secrets (RUN --mount=type=secret) from Dockerfile
+    let build_secrets = template::extract_dockerfile_secrets(&dockerfile_path, &env_path);
+    let rendered = if !build_secrets.is_empty() {
+        println!(
+            "  Injecting build secrets from Dockerfile + .env: {}",
+            build_secrets.join(", ")
+        );
+        template::inject_build_secrets(&rendered, &build_secrets)
+    } else {
+        rendered
+    };
 
     let compose_dir = devflow_dir.join("compose").join(worker_name);
     std::fs::create_dir_all(&compose_dir)?;
 
     let compose_file = compose_dir.join("docker-compose.yml");
-    std::fs::write(&compose_file, rendered)?;
+    std::fs::write(&compose_file, &rendered)?;
 
-    // Copy .env into compose directory so Docker Compose can resolve ${VAR} in the template
+    // Copy .env into compose directory, normalizing for Docker Compose compatibility.
+    // Docker Compose .env does NOT support `export` prefix or quoted values.
     let worktree_env = worktree_path.join(".env");
     if worktree_env.exists() {
-        let _ = std::fs::copy(&worktree_env, compose_dir.join(".env"));
+        match normalize_env_file(&worktree_env, &compose_dir.join(".env")) {
+            Ok(_) => println!("  Copied .env to compose directory (normalized)"),
+            Err(e) => eprintln!("Warning: failed to copy .env to compose directory: {e}"),
+        }
+    } else {
+        eprintln!(
+            "Warning: no .env found at {} — build args may not resolve",
+            worktree_env.display()
+        );
     }
 
     Ok(compose_file)
@@ -60,18 +102,50 @@ pub fn generate_compose_file(
 /// Start the compose stack in detached mode.
 pub fn up(compose_file: &Path) -> Result<()> {
     let project = project_name(compose_file);
-    let output = Command::new("docker")
-        .args([
-            "compose",
-            "-f",
-            &compose_file.to_string_lossy(),
-            "-p",
-            &project,
-            "up",
-            "-d",
-            "--build",
-        ])
-        .output()?;
+    let compose_dir = compose_file.parent().unwrap_or(Path::new("."));
+    let env_file = compose_dir.join(".env");
+
+    let mut args = vec![
+        "compose".to_string(),
+        "-f".to_string(),
+        compose_file.to_string_lossy().to_string(),
+        "-p".to_string(),
+        project,
+    ];
+
+    // Explicitly point Docker Compose to the .env file for variable substitution
+    if env_file.exists() {
+        args.push("--env-file".to_string());
+        args.push(env_file.to_string_lossy().to_string());
+    }
+
+    args.extend([
+        "up".to_string(),
+        "-d".to_string(),
+        "--build".to_string(),
+    ]);
+
+    let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let mut cmd = Command::new("docker");
+    cmd.args(&arg_refs);
+
+    // Load .env vars into the process environment so Docker Compose
+    // can use them for both ${VAR} substitution AND secrets (environment: VAR).
+    if env_file.exists() {
+        if let Ok(contents) = std::fs::read_to_string(&env_file) {
+            for line in contents.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with('#') {
+                    continue;
+                }
+                if let Some((key, value)) = trimmed.split_once('=') {
+                    cmd.env(key.trim(), value.trim());
+                }
+            }
+        }
+    }
+
+    let output = cmd.output()?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -219,8 +293,50 @@ pub fn exec(compose_file: &Path, service: &str, cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Normalize a .env file for Docker Compose compatibility.
+/// Strips `export` prefixes and surrounding quotes from values.
+fn normalize_env_file(src: &Path, dst: &Path) -> std::io::Result<()> {
+    let contents = std::fs::read_to_string(src)?;
+    let mut normalized = String::new();
+
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            normalized.push_str(line);
+            normalized.push('\n');
+            continue;
+        }
+
+        // Strip `export ` prefix
+        let trimmed = trimmed.strip_prefix("export ").unwrap_or(trimmed);
+
+        // Split into key=value, strip quotes from value
+        if let Some((key, value)) = trimmed.split_once('=') {
+            let key = key.trim();
+            let value = value.trim();
+            // Strip surrounding single or double quotes
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| {
+                    value
+                        .strip_prefix('\'')
+                        .and_then(|v| v.strip_suffix('\''))
+                })
+                .unwrap_or(value);
+            normalized.push_str(&format!("{key}={value}\n"));
+        } else {
+            // Key with no value
+            normalized.push_str(trimmed);
+            normalized.push('\n');
+        }
+    }
+
+    std::fs::write(dst, normalized)
+}
+
 /// Derive the project name from the compose file's parent directory.
-fn project_name(compose_file: &Path) -> String {
+pub fn project_name(compose_file: &Path) -> String {
     compose_file
         .parent()
         .and_then(|p| p.file_name())
