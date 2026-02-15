@@ -251,6 +251,7 @@ pub fn clone_database(
 
     // Start psql in the compose db container
     let project = compose_mgr::project_name(compose_file);
+    let target_db = format!("{worker_name}_dev");
     let mut psql = Command::new("docker")
         .args([
             "compose",
@@ -258,7 +259,7 @@ pub fn clone_database(
             "-p", &project,
             "exec", "-T",
             "db",
-            "psql", "-U", "postgres", "-d", "app_development",
+            "psql", "-U", "postgres", "-d", &target_db,
         ])
         .stdin(Stdio::from(pg_dump_stdout))
         .stdout(Stdio::piped())
