@@ -12,20 +12,27 @@ pub struct GitRepo {
 impl GitRepo {
     pub fn discover() -> Result<Self> {
         let repo = Repository::discover(".").map_err(|_| TreehouseError::NotGitRepo)?;
-        let root = repo
-            .workdir()
-            .ok_or(TreehouseError::NotGitRepo)?
-            .to_path_buf();
+        let root = Self::resolve_root(&repo)?;
         Ok(Self { repo, root })
     }
 
     pub fn open(path: &Path) -> Result<Self> {
         let repo = Repository::open(path).map_err(|_| TreehouseError::NotGitRepo)?;
-        let root = repo
-            .workdir()
+        let root = Self::resolve_root(&repo)?;
+        Ok(Self { repo, root })
+    }
+
+    /// Resolve the main repo root, even when called from inside a worktree.
+    /// `repo.workdir()` returns the worktree's own directory, so we use
+    /// `repo.commondir()` (points to the real `.git`) and go up one level.
+    fn resolve_root(repo: &Repository) -> Result<PathBuf> {
+        let commondir = repo.commondir().to_path_buf();
+        // commondir is e.g. `/repo/.git` — parent is the repo root
+        let root = commondir
+            .parent()
             .ok_or(TreehouseError::NotGitRepo)?
             .to_path_buf();
-        Ok(Self { repo, root })
+        Ok(root)
     }
 
     pub fn head_commit_id(&self) -> Result<git2::Oid> {

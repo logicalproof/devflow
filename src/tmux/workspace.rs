@@ -117,6 +117,22 @@ pub fn worker_session_exists(hub_session: &str, task_name: &str) -> bool {
     session::session_exists(&name)
 }
 
+/// Query tmux's base-index setting (default 0, some users set to 1).
+fn get_base_index() -> u32 {
+    std::process::Command::new("tmux")
+        .args(["show-option", "-gv", "base-index"])
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8_lossy(&o.stdout).trim().parse().ok()
+            } else {
+                None
+            }
+        })
+        .unwrap_or(0)
+}
+
 /// Create a per-worker tmux session with windows and panes from the template.
 ///
 /// When `compose_file` is `Some`, non-host panes have their commands wrapped with
@@ -137,27 +153,21 @@ pub fn create_worker_session(
         )
     });
 
+    // Use window indices for targeting — window names are unreliable due to
+    // automatic-rename and other tmux config that can change names after creation.
+    let base_index = get_base_index();
+
     for (win_idx, window) in template.windows.iter().enumerate() {
-        let win_target = format!("{session_name}:{}", window.name);
+        let win_index = base_index + win_idx as u32;
+        let win_target = format!("{session_name}:{win_index}");
 
         if win_idx == 0 {
             // Create the session with the first window
             session::create_session(session_name, default_dir)?;
-            // Rename the default window (target the session itself, not a hardcoded index)
-            let rename_output = std::process::Command::new("tmux")
-                .args([
-                    "rename-window",
-                    "-t",
-                    session_name,
-                    &window.name,
-                ])
-                .output()?;
-            if !rename_output.status.success() {
-                let stderr = String::from_utf8_lossy(&rename_output.stderr);
-                return Err(crate::error::TreehouseError::TmuxCommand(format!(
-                    "Failed to rename window: {stderr}"
-                )));
-            }
+            // Rename the default window (best-effort, purely cosmetic)
+            let _ = std::process::Command::new("tmux")
+                .args(["rename-window", "-t", &win_target, &window.name])
+                .output();
         } else {
             // Create additional windows
             session::create_window(session_name, &window.name, default_dir)?;
