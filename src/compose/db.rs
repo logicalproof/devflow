@@ -3,14 +3,14 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 use super::manager as compose_mgr;
 
 /// Check that `pg_dump` is available on the host PATH.
 pub fn check_pg_dump_available() -> Result<()> {
     if which::which("pg_dump").is_err() {
-        return Err(TreehouseError::Other(
+        return Err(GrootError::Other(
             "pg_dump not found on PATH. Install PostgreSQL client tools:\n  \
              macOS:  brew install libpq && brew link --force libpq\n  \
              Ubuntu: sudo apt-get install postgresql-client\n  \
@@ -44,7 +44,7 @@ pub fn detect_source_db(worktree_path: &Path) -> Result<String> {
         println!("  Detected database from naming convention: {url}");
         return Ok(url);
     }
-    Err(TreehouseError::Other(
+    Err(GrootError::Other(
         "Could not detect source database".into(),
     ))
 }
@@ -277,7 +277,7 @@ pub fn clone_database(
     // Pre-flight: verify the source database is reachable
     println!("Verifying source database '{db_name}' is reachable...");
     let check = Command::new("pg_dump")
-        .args(["-h", &host, "-p", &port, "-d", &db_name, "--schema-only", "-t", "__treehouse_preflight_nonexistent__"])
+        .args(["-h", &host, "-p", &port, "-d", &db_name, "--schema-only", "-t", "__groot_preflight_nonexistent__"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()?;
@@ -290,7 +290,7 @@ pub fn clone_database(
         || check_stderr.contains("Connection refused")
         || check_stderr.contains("No such file or directory")
     {
-        return Err(TreehouseError::Other(format!(
+        return Err(GrootError::Other(format!(
             "Cannot connect to source database '{db_name}' at {host}:{port}.\n\
              Is PostgreSQL running? Check: pg_isready -h {host} -p {port}"
         )));
@@ -312,17 +312,17 @@ pub fn clone_database(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| TreehouseError::Other(format!("Failed to start pg_dump: {e}")))?;
+        .map_err(|e| GrootError::Other(format!("Failed to start pg_dump: {e}")))?;
 
     let pg_dump_stdout = pg_dump
         .stdout
         .take()
-        .ok_or_else(|| TreehouseError::Other("Failed to capture pg_dump stdout".to_string()))?;
+        .ok_or_else(|| GrootError::Other("Failed to capture pg_dump stdout".to_string()))?;
 
     let pg_dump_stderr = pg_dump
         .stderr
         .take()
-        .ok_or_else(|| TreehouseError::Other("Failed to capture pg_dump stderr".to_string()))?;
+        .ok_or_else(|| GrootError::Other("Failed to capture pg_dump stderr".to_string()))?;
 
     // Background thread to drain pg_dump stderr (prevents deadlock)
     let stderr_handle = std::thread::spawn(move || {
@@ -354,15 +354,15 @@ pub fn clone_database(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| TreehouseError::Other(format!("Failed to start psql in container: {e}")))?;
+        .map_err(|e| GrootError::Other(format!("Failed to start psql in container: {e}")))?;
 
     let psql_status = psql
         .wait()
-        .map_err(|e| TreehouseError::Other(format!("Failed to wait for psql: {e}")))?;
+        .map_err(|e| GrootError::Other(format!("Failed to wait for psql: {e}")))?;
 
     let pg_dump_status = pg_dump
         .wait()
-        .map_err(|e| TreehouseError::Other(format!("Failed to wait for pg_dump: {e}")))?;
+        .map_err(|e| GrootError::Other(format!("Failed to wait for pg_dump: {e}")))?;
 
     // Collect stderr from pg_dump
     let dump_errors = stderr_handle.join().unwrap_or_default();
@@ -396,7 +396,7 @@ pub fn clone_database(
     }
 
     if !pg_dump_status.success() {
-        return Err(TreehouseError::Other(
+        return Err(GrootError::Other(
             "pg_dump failed — check the errors above".to_string(),
         ));
     }
@@ -416,13 +416,13 @@ fn parse_pg_url(raw: &str) -> Result<(String, String, String)> {
     // The `url` crate doesn't recognize postgres:// as a special scheme,
     // but it parses it fine as a generic URL.
     let parsed = url::Url::parse(raw).map_err(|e| {
-        TreehouseError::Other(format!("Invalid database URL '{raw}': {e}"))
+        GrootError::Other(format!("Invalid database URL '{raw}': {e}"))
     })?;
 
     match parsed.scheme() {
         "postgres" | "postgresql" => {}
         scheme => {
-            return Err(TreehouseError::Other(format!(
+            return Err(GrootError::Other(format!(
                 "Invalid database URL scheme '{scheme}' in '{raw}'. Expected postgres:// or postgresql://"
             )));
         }
@@ -430,13 +430,13 @@ fn parse_pg_url(raw: &str) -> Result<(String, String, String)> {
 
     let host = parsed
         .host_str()
-        .ok_or_else(|| TreehouseError::Other(format!("No host in database URL '{raw}'")))?
+        .ok_or_else(|| GrootError::Other(format!("No host in database URL '{raw}'")))?
         .to_string();
     let port = parsed.port().unwrap_or(5432).to_string();
     let db_name = parsed.path().trim_start_matches('/').to_string();
 
     if db_name.is_empty() {
-        return Err(TreehouseError::Other(format!(
+        return Err(GrootError::Other(format!(
             "No database name in URL '{raw}'"
         )));
     }

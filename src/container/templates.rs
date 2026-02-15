@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 pub struct DockerfileTemplate {
     pub name: String,
@@ -11,7 +11,7 @@ pub struct DockerfileTemplate {
 pub fn load_template(templates_dir: &Path, name: &str) -> Result<DockerfileTemplate> {
     let path = templates_dir.join(format!("Dockerfile.{name}"));
     if !path.exists() {
-        return Err(TreehouseError::TemplateNotFound(name.to_string()));
+        return Err(GrootError::TemplateNotFound(name.to_string()));
     }
 
     let content = std::fs::read_to_string(&path)?;

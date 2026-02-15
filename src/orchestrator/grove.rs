@@ -7,7 +7,7 @@ use crate::claude_md;
 use crate::compose::{db as compose_db, manager as compose_mgr, ports};
 use crate::config::lock::FileLock;
 use crate::config::project::ProjectConfig;
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 use crate::git::{branch, repo::GitRepo, worktree};
 use crate::tmux::{session, workspace};
 
@@ -17,7 +17,7 @@ use super::state::GroveState;
 /// create tmux workspace, save state.
 pub fn plant(
     git: &GitRepo,
-    treehouse_dir: &Path,
+    groot_dir: &Path,
     task_name: &str,
     branch_name: &str,
     task_type: &str,
@@ -29,15 +29,17 @@ pub fn plant(
     compose_post_start: &[String],
     db_clone: bool,
     db_source: Option<&str>,
+    shared_grove: Option<&str>,
+    shared_compose_ports: Option<&ports::AllocatedPorts>,
 ) -> Result<GroveState> {
     // 1. Acquire lock
-    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = groot_dir.join("locks").join(format!("{task_name}.lock"));
     let _lock = FileLock::acquire(&lock_path)?;
 
     // 2. Check for duplicate
-    let state_path = GroveState::state_path(treehouse_dir, task_name);
+    let state_path = GroveState::state_path(groot_dir, task_name);
     if state_path.exists() {
-        return Err(TreehouseError::GroveAlreadyExists(task_name.to_string()));
+        return Err(GrootError::GroveAlreadyExists(task_name.to_string()));
     }
 
     // 3. Check disk space
@@ -52,7 +54,7 @@ pub fn plant(
     };
 
     // 5. Create worktree (or reuse existing one from a previous `stop`)
-    let worktree_path = treehouse_dir.join("worktrees").join(task_name);
+    let worktree_path = groot_dir.join("worktrees").join(task_name);
     let reusing_worktree = worktree::worktree_exists(&worktree_path);
 
     if reusing_worktree {
@@ -65,7 +67,7 @@ pub fn plant(
     }
 
     // 5½. Copy essential files into worktree from repo root.
-    for filename in &["Dockerfile.dev", "Dockerfile.devflow", ".env", "config/master.key"] {
+    for filename in &["Dockerfile.dev", "Dockerfile.groot", ".env", "config/master.key"] {
         let repo_file = git.root.join(filename);
         let worktree_file = worktree_path.join(filename);
         if repo_file.exists() {
@@ -107,7 +109,7 @@ pub fn plant(
         }
 
         // 5b. Allocate ports
-        let allocated = match ports::allocate(treehouse_dir, task_name) {
+        let allocated = match ports::allocate(groot_dir, task_name) {
             Ok(p) => p,
             Err(e) => {
                 if !reusing_worktree {
@@ -122,7 +124,7 @@ pub fn plant(
 
         // 5b½. Check ports are actually available on the host
         if let Err(e) = ports::check_ports_available(&allocated) {
-            let _ = ports::release(treehouse_dir, task_name);
+            let _ = ports::release(groot_dir, task_name);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
             }
@@ -134,14 +136,14 @@ pub fn plant(
 
         // 5c. Generate compose file
         let cf = match compose_mgr::generate_compose_file(
-            treehouse_dir,
+            groot_dir,
             task_name,
             &worktree_path,
             &allocated,
         ) {
             Ok(cf) => cf,
             Err(e) => {
-                let _ = ports::release(treehouse_dir, task_name);
+                let _ = ports::release(groot_dir, task_name);
                 if !reusing_worktree {
                     let _ = worktree::remove_worktree(&git.root, &worktree_path);
                 }
@@ -154,8 +156,8 @@ pub fn plant(
 
         // 5d. Start compose stack
         if let Err(e) = compose_mgr::up(&cf) {
-            let _ = ports::release(treehouse_dir, task_name);
-            let compose_dir = treehouse_dir.join("compose").join(task_name);
+            let _ = ports::release(groot_dir, task_name);
+            let compose_dir = groot_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
@@ -172,8 +174,8 @@ pub fn plant(
             Duration::from_secs(compose_health_timeout_secs),
         ) {
             let _ = compose_mgr::down(&cf);
-            let _ = ports::release(treehouse_dir, task_name);
-            let compose_dir = treehouse_dir.join("compose").join(task_name);
+            let _ = ports::release(groot_dir, task_name);
+            let compose_dir = groot_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
@@ -206,7 +208,7 @@ pub fn plant(
                 if let Err(e) = compose_db::clone_database(&cf, &source, task_name) {
                     eprintln!("Warning: database clone failed: {e}");
                     eprintln!("  The grove is running but the database may be empty.");
-                    eprintln!("  You can retry with: th grove transplant {task_name}");
+                    eprintln!("  You can retry with: groot grove transplant {task_name}");
                 }
             }
         } else {
@@ -228,13 +230,15 @@ pub fn plant(
 
     // 5g. Generate CLAUDE.local.md in worktree (non-fatal)
     {
-        let config_path = treehouse_dir.join("config.yml");
+        let config_path = groot_dir.join("config.yml");
         let project_name = ProjectConfig::load(&config_path)
             .map(|c| c.project_name)
             .unwrap_or_default();
         let detected_types = ProjectConfig::load(&config_path)
             .map(|c| c.detected_types.join(", "))
             .unwrap_or_default();
+
+        let is_shared = shared_grove.is_some();
         let compose_file_str = compose_file
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
@@ -244,6 +248,9 @@ pub fn plant(
             .map(|p| compose_mgr::project_name(p))
             .unwrap_or_default();
 
+        // Port values: prefer shared_compose_ports, then own compose_ports, then defaults
+        let effective_ports = shared_compose_ports.or(compose_ports.as_ref());
+
         let vars = claude_md::ClaudeMdVars {
             worktree_path: &worktree_path.to_string_lossy(),
             worker_name: task_name,
@@ -251,41 +258,52 @@ pub fn plant(
             project_name: &project_name,
             task_type,
             detected_types: &detected_types,
-            compose_enabled: compose_file.is_some(),
+            compose_enabled: compose_file.is_some() && !is_shared,
             compose_file: &compose_file_str,
             compose_project: &compose_project_str,
-            app_port: compose_ports.as_ref().map(|p| p.app).unwrap_or(3000),
-            db_port: compose_ports.as_ref().map(|p| p.db).unwrap_or(5432),
-            redis_port: compose_ports.as_ref().map(|p| p.redis).unwrap_or(6379),
+            app_port: effective_ports.map(|p| p.app).unwrap_or(3000),
+            db_port: effective_ports.map(|p| p.db).unwrap_or(5432),
+            redis_port: effective_ports.map(|p| p.redis).unwrap_or(6379),
+            shared_compose: is_shared,
+            shared_grove_name: shared_grove.unwrap_or(""),
         };
 
-        match claude_md::generate(&worktree_path, treehouse_dir, &vars) {
+        match claude_md::generate(&worktree_path, groot_dir, &vars) {
             Ok(()) => println!("Generated CLAUDE.local.md in worktree"),
             Err(e) => eprintln!("Warning: failed to generate CLAUDE.local.md: {e}"),
         }
     }
 
     // 6. Create per-grove tmux workspace session
-    let ws_template = workspace::load_template(treehouse_dir)?
+    let ws_template = workspace::load_template(groot_dir)?
         .unwrap_or_else(workspace::default_template);
+
+    // When sharing a grove's compose, use shared ports for template vars but don't
+    // pass compose_file so panes run commands locally instead of via `docker compose exec`.
+    let effective_ports = shared_compose_ports.or(compose_ports.as_ref());
+    let effective_compose_file = if shared_grove.is_some() {
+        None
+    } else {
+        compose_file.as_deref()
+    };
 
     let vars = workspace::WorkspaceVars {
         worktree_path: &worktree_path.to_string_lossy(),
         worker_name: task_name,
-        app_port: compose_ports.as_ref().map(|p| p.app),
-        db_port: compose_ports.as_ref().map(|p| p.db),
-        redis_port: compose_ports.as_ref().map(|p| p.redis),
-        compose_file: compose_file.as_deref(),
+        app_port: effective_ports.map(|p| p.app),
+        db_port: effective_ports.map(|p| p.db),
+        redis_port: effective_ports.map(|p| p.redis),
+        compose_file: effective_compose_file,
     };
     let rendered = workspace::render_template(&ws_template, &vars);
     let ws_name = workspace::worker_session_name(tmux_session, task_name);
 
-    if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path, compose_file.as_deref()) {
+    if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path, effective_compose_file) {
         workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = compose_file {
             let _ = compose_mgr::down(cf);
-            let _ = ports::release(treehouse_dir, task_name);
-            let compose_dir = treehouse_dir.join("compose").join(task_name);
+            let _ = ports::release(groot_dir, task_name);
+            let compose_dir = groot_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
         if !reusing_worktree {
@@ -319,14 +337,16 @@ pub fn plant(
         compose_file,
         compose_ports,
         tmux_session: Some(ws_name.clone()),
+        shared_grove: shared_grove.map(|s| s.to_string()),
+        shared_compose_ports: shared_compose_ports.cloned(),
     };
 
     if let Err(e) = state.save(&state_path) {
         workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = state.compose_file {
             let _ = compose_mgr::down(cf);
-            let _ = ports::release(treehouse_dir, task_name);
-            let compose_dir = treehouse_dir.join("compose").join(task_name);
+            let _ = ports::release(groot_dir, task_name);
+            let compose_dir = groot_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
         if !reusing_worktree {
@@ -341,22 +361,52 @@ pub fn plant(
     Ok(state)
 }
 
+/// Find trees that share a grove's compose stack.
+fn find_sharing_trees(groot_dir: &Path, grove_name: &str) -> Vec<String> {
+    let groves = list_groves(groot_dir).unwrap_or_default();
+    groves
+        .iter()
+        .filter(|g| g.shared_grove.as_deref() == Some(grove_name))
+        .map(|g| g.task_name.clone())
+        .collect()
+}
+
 /// Stop a grove/tree: tear down ephemeral resources (compose, tmux, state) but keep worktree + branch.
-pub fn stop(treehouse_dir: &Path, task_name: &str) -> Result<()> {
-    let state_path = GroveState::state_path(treehouse_dir, task_name);
+pub fn stop(groot_dir: &Path, task_name: &str, force: bool) -> Result<()> {
+    let state_path = GroveState::state_path(groot_dir, task_name);
     if !state_path.exists() {
-        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
+        return Err(GrootError::GroveNotFound(task_name.to_string()));
     }
 
     let state = GroveState::load(&state_path)?;
+
+    // Block or auto-stop sharing trees
+    if state.compose_file.is_some() {
+        let sharing = find_sharing_trees(groot_dir, task_name);
+        if !sharing.is_empty() {
+            if !force {
+                return Err(GrootError::Other(format!(
+                    "Grove '{}' has sharing tree(s): {}. Stop or uproot them first, or use --force to override.",
+                    task_name,
+                    sharing.join(", ")
+                )));
+            }
+            for tree_name in &sharing {
+                eprintln!("Stopping sharing tree '{tree_name}'...");
+                if let Err(e) = stop(groot_dir, tree_name, false) {
+                    eprintln!("Warning: failed to stop sharing tree '{tree_name}': {e}");
+                }
+            }
+        }
+    }
 
     // Tear down compose stack if present
     if let Some(ref cf) = state.compose_file {
         if let Err(e) = compose_mgr::down(cf) {
             eprintln!("Warning: compose down failed: {e}");
         }
-        let _ = ports::release(treehouse_dir, task_name);
-        let compose_dir = treehouse_dir.join("compose").join(task_name);
+        let _ = ports::release(groot_dir, task_name);
+        let compose_dir = groot_dir.join("compose").join(task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
@@ -369,7 +419,7 @@ pub fn stop(treehouse_dir: &Path, task_name: &str) -> Result<()> {
     std::fs::remove_file(&state_path)?;
 
     // Remove lock file if it exists
-    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = groot_dir.join("locks").join(format!("{task_name}.lock"));
     let _ = std::fs::remove_file(lock_path);
 
     Ok(())
@@ -378,15 +428,35 @@ pub fn stop(treehouse_dir: &Path, task_name: &str) -> Result<()> {
 /// Uproot a grove/tree: tear down compose stack, remove tmux session, worktree, branch, and state file.
 /// If the worktree has uncommitted changes or unpushed commits and `force` is false,
 /// returns an error suggesting `stop` or `uproot --force`.
-pub fn uproot(git: &GitRepo, treehouse_dir: &Path, task_name: &str, force: bool) -> Result<()> {
-    let state_path = GroveState::state_path(treehouse_dir, task_name);
+pub fn uproot(git: &GitRepo, groot_dir: &Path, task_name: &str, force: bool) -> Result<()> {
+    let state_path = GroveState::state_path(groot_dir, task_name);
     if !state_path.exists() {
-        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
+        return Err(GrootError::GroveNotFound(task_name.to_string()));
     }
 
     let state = GroveState::load(&state_path)?;
 
     let kind = if state.compose_file.is_some() { "grove" } else { "tree" };
+
+    // Block or auto-stop sharing trees
+    if state.compose_file.is_some() {
+        let sharing = find_sharing_trees(groot_dir, task_name);
+        if !sharing.is_empty() {
+            if !force {
+                return Err(GrootError::Other(format!(
+                    "Grove '{}' has sharing tree(s): {}. Stop or uproot them first, or use --force to override.",
+                    task_name,
+                    sharing.join(", ")
+                )));
+            }
+            for tree_name in &sharing {
+                eprintln!("Stopping sharing tree '{tree_name}'...");
+                if let Err(e) = stop(groot_dir, tree_name, false) {
+                    eprintln!("Warning: failed to stop sharing tree '{tree_name}': {e}");
+                }
+            }
+        }
+    }
 
     // Check for dirty worktree before destroying
     if !force && state.worktree_path.exists() {
@@ -401,10 +471,10 @@ pub fn uproot(git: &GitRepo, treehouse_dir: &Path, task_name: &str, force: bool)
             if ahead > 0 {
                 reasons.push(format!("{ahead} unpushed commit(s)"));
             }
-            return Err(TreehouseError::Other(format!(
+            return Err(GrootError::Other(format!(
                 "{kind} '{}' has {}.\n\
-                 Use 'th {kind} stop {0}' to stop but keep your work.\n\
-                 Use 'th {kind} uproot {0} --force' to destroy everything.",
+                 Use 'groot {kind} stop {0}' to stop but keep your work.\n\
+                 Use 'groot {kind} uproot {0} --force' to destroy everything.",
                 task_name,
                 reasons.join(" and "),
             )));
@@ -416,8 +486,8 @@ pub fn uproot(git: &GitRepo, treehouse_dir: &Path, task_name: &str, force: bool)
         if let Err(e) = compose_mgr::down(cf) {
             eprintln!("Warning: compose down failed: {e}");
         }
-        let _ = ports::release(treehouse_dir, task_name);
-        let compose_dir = treehouse_dir.join("compose").join(task_name);
+        let _ = ports::release(groot_dir, task_name);
+        let compose_dir = groot_dir.join("compose").join(task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
@@ -438,15 +508,15 @@ pub fn uproot(git: &GitRepo, treehouse_dir: &Path, task_name: &str, force: bool)
     std::fs::remove_file(&state_path)?;
 
     // Remove lock file if it exists
-    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = groot_dir.join("locks").join(format!("{task_name}.lock"));
     let _ = std::fs::remove_file(lock_path);
 
     Ok(())
 }
 
 /// List all groves from state files
-pub fn list_groves(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
-    let groves_dir = treehouse_dir.join("groves");
+pub fn list_groves(groot_dir: &Path) -> Result<Vec<GroveState>> {
+    let groves_dir = groot_dir.join("groves");
     if !groves_dir.exists() {
         return Ok(Vec::new());
     }
@@ -466,10 +536,10 @@ pub fn list_groves(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
 }
 
 /// Get a grove by name
-pub fn get_grove_by_name(treehouse_dir: &Path, task_name: &str) -> Result<GroveState> {
-    let state_path = GroveState::state_path(treehouse_dir, task_name);
+pub fn get_grove_by_name(groot_dir: &Path, task_name: &str) -> Result<GroveState> {
+    let state_path = GroveState::state_path(groot_dir, task_name);
     if !state_path.exists() {
-        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
+        return Err(GrootError::GroveNotFound(task_name.to_string()));
     }
     GroveState::load(&state_path)
 }
@@ -480,7 +550,7 @@ fn check_disk_space(min_mb: u64) -> Result<()> {
         if disk.mount_point() == Path::new("/") {
             let available_mb = disk.available_space() / (1024 * 1024);
             if available_mb < min_mb {
-                return Err(TreehouseError::InsufficientDiskSpace {
+                return Err(GrootError::InsufficientDiskSpace {
                     available_mb,
                     required_mb: min_mb,
                 });

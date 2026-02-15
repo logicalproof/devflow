@@ -7,8 +7,8 @@ use crate::tmux::{session, workspace};
 use super::state::GroveState;
 
 /// Find orphaned groves (state file exists but tmux session is gone)
-pub fn find_orphans(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
-    let groves_dir = treehouse_dir.join("groves");
+pub fn find_orphans(groot_dir: &Path) -> Result<Vec<GroveState>> {
+    let groves_dir = groot_dir.join("groves");
     if !groves_dir.exists() {
         return Ok(Vec::new());
     }
@@ -35,12 +35,12 @@ pub fn find_orphans(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
 }
 
 /// Clean up an orphaned grove's resources
-pub fn cleanup_orphan(treehouse_dir: &Path, repo_root: &Path, state: &GroveState) -> Result<()> {
+pub fn cleanup_orphan(groot_dir: &Path, repo_root: &Path, state: &GroveState) -> Result<()> {
     // Tear down compose stack if present (best-effort)
     if let Some(ref cf) = state.compose_file {
         let _ = compose_mgr::down(cf);
-        let _ = ports::release(treehouse_dir, &state.task_name);
-        let compose_dir = treehouse_dir.join("compose").join(&state.task_name);
+        let _ = ports::release(groot_dir, &state.task_name);
+        let compose_dir = groot_dir.join("compose").join(&state.task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
@@ -55,11 +55,11 @@ pub fn cleanup_orphan(treehouse_dir: &Path, repo_root: &Path, state: &GroveState
     }
 
     // Remove state file
-    let state_path = GroveState::state_path(treehouse_dir, &state.task_name);
+    let state_path = GroveState::state_path(groot_dir, &state.task_name);
     let _ = std::fs::remove_file(state_path);
 
     // Remove lock file
-    let lock_path = treehouse_dir
+    let lock_path = groot_dir
         .join("locks")
         .join(format!("{}.lock", state.task_name));
     let _ = std::fs::remove_file(lock_path);

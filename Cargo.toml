@@ -1,11 +1,11 @@
 [package]
-name = "treehouse"
-version = "0.8.0"
+name = "groot"
+version = "0.9.0"
 edition = "2024"
 description = "Parallel AI-assisted development orchestrator"
 
 [[bin]]
-name = "th"
+name = "groot"
 path = "src/main.rs"
 
 [dependencies]

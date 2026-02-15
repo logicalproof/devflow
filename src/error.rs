@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum TreehouseError {
+pub enum GrootError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -17,7 +17,7 @@ pub enum TreehouseError {
     #[error("Docker error: {0}")]
     Docker(#[from] bollard::errors::Error),
 
-    #[error("Not a treehouse project. Run 'th init' first.")]
+    #[error("Not a groot project. Run 'groot init' first.")]
     NotInitialized,
 
     #[error("Not a git repository")]
@@ -72,4 +72,4 @@ pub enum TreehouseError {
     Other(String),
 }
 
-pub type Result<T> = std::result::Result<T, TreehouseError>;
+pub type Result<T> = std::result::Result<T, GrootError>;

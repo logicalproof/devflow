@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::net::TcpListener;
 
 use crate::config::lock::FileLock;
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct AllocatedPorts {
@@ -25,9 +25,9 @@ const DB_BASE: u16 = 5433;
 const REDIS_BASE: u16 = 6380;
 
 /// Allocate ports for a worker, using gap-filling to reuse freed slots.
-pub fn allocate(treehouse_dir: &Path, worker_name: &str) -> Result<AllocatedPorts> {
-    let registry_path = treehouse_dir.join("ports.json");
-    let lock_path = treehouse_dir.join("ports.json.lock");
+pub fn allocate(groot_dir: &Path, worker_name: &str) -> Result<AllocatedPorts> {
+    let registry_path = groot_dir.join("ports.json");
+    let lock_path = groot_dir.join("ports.json.lock");
     let _lock = FileLock::acquire(&lock_path)?;
 
     let mut registry = load_registry(&registry_path);
@@ -64,9 +64,9 @@ pub fn allocate(treehouse_dir: &Path, worker_name: &str) -> Result<AllocatedPort
 }
 
 /// Release ports for a worker.
-pub fn release(treehouse_dir: &Path, worker_name: &str) -> Result<()> {
-    let registry_path = treehouse_dir.join("ports.json");
-    let lock_path = treehouse_dir.join("ports.json.lock");
+pub fn release(groot_dir: &Path, worker_name: &str) -> Result<()> {
+    let registry_path = groot_dir.join("ports.json");
+    let lock_path = groot_dir.join("ports.json.lock");
     let _lock = FileLock::acquire(&lock_path)?;
 
     let mut registry = load_registry(&registry_path);
@@ -86,7 +86,7 @@ pub fn check_ports_available(ports: &AllocatedPorts) -> Result<()> {
 
     for (port, service) in checks {
         if TcpListener::bind(("0.0.0.0", port)).is_err() {
-            return Err(TreehouseError::PortInUse {
+            return Err(GrootError::PortInUse {
                 port,
                 service: service.to_string(),
             });

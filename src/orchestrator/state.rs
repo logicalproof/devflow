@@ -23,6 +23,10 @@ pub struct GroveState {
     pub compose_ports: Option<AllocatedPorts>,
     #[serde(default)]
     pub tmux_session: Option<String>,
+    #[serde(default)]
+    pub shared_grove: Option<String>,
+    #[serde(default)]
+    pub shared_compose_ports: Option<AllocatedPorts>,
 }
 
 impl GroveState {
@@ -41,7 +45,7 @@ impl GroveState {
         Ok(())
     }
 
-    pub fn state_path(treehouse_dir: &Path, task_name: &str) -> PathBuf {
-        treehouse_dir.join("groves").join(format!("{task_name}.json"))
+    pub fn state_path(groot_dir: &Path, task_name: &str) -> PathBuf {
+        groot_dir.join("groves").join(format!("{task_name}.json"))
     }
 }

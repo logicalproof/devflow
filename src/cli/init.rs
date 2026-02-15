@@ -30,20 +30,20 @@ fn ensure_gitignore_entry(repo_root: &std::path::Path, entry: &str) {
 
 pub async fn run() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = git.treehouse_dir();
+    let groot_dir = git.groot_dir();
 
-    if treehouse_dir.join("config.yml").exists() {
+    if groot_dir.join("config.yml").exists() {
         println!(
             "{} Already initialized. Config at {}",
             style("!").yellow().bold(),
-            treehouse_dir.join("config.yml").display()
+            groot_dir.join("config.yml").display()
         );
         return Ok(());
     }
 
     // Create directory structure
     for dir in &["worktrees", "groves", "locks", "compose"] {
-        fs::create_dir_all(treehouse_dir.join(dir))?;
+        fs::create_dir_all(groot_dir.join(dir))?;
     }
 
     // Detect project types
@@ -80,29 +80,29 @@ pub async fn run() -> Result<()> {
         container_enabled: false,
         default_branch,
     };
-    project_config.save(&treehouse_dir.join("config.yml"))?;
+    project_config.save(&groot_dir.join("config.yml"))?;
 
     // Write local config
     let local_config = LocalConfig::with_defaults();
-    local_config.save(&treehouse_dir.join("local.yml"))?;
+    local_config.save(&groot_dir.join("local.yml"))?;
 
     // Ensure .env is in .gitignore to prevent secrets from being committed
     ensure_gitignore_entry(&git.root, ".env");
-    ensure_gitignore_entry(&git.root, ".treehouse/worktrees/");
-    ensure_gitignore_entry(&git.root, ".treehouse/groves/");
-    ensure_gitignore_entry(&git.root, ".treehouse/compose/");
-    ensure_gitignore_entry(&git.root, ".treehouse/locks/");
-    ensure_gitignore_entry(&git.root, ".treehouse/local.yml");
-    ensure_gitignore_entry(&git.root, ".treehouse/ports.json");
-    ensure_gitignore_entry(&git.root, ".treehouse/ports.json.lock");
+    ensure_gitignore_entry(&git.root, ".groot/worktrees/");
+    ensure_gitignore_entry(&git.root, ".groot/groves/");
+    ensure_gitignore_entry(&git.root, ".groot/compose/");
+    ensure_gitignore_entry(&git.root, ".groot/locks/");
+    ensure_gitignore_entry(&git.root, ".groot/local.yml");
+    ensure_gitignore_entry(&git.root, ".groot/ports.json");
+    ensure_gitignore_entry(&git.root, ".groot/ports.json.lock");
     println!(
-        "{} Initialized treehouse for project '{}'",
+        "{} Initialized groot for project '{}'",
         style("✓").green().bold(),
         project_name
     );
     println!(
         "  Config: {}",
-        treehouse_dir.join("config.yml").display()
+        groot_dir.join("config.yml").display()
     );
 
     Ok(())

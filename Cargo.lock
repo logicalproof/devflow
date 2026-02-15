@@ -498,6 +498,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "groot"
+version = "0.9.0"
+dependencies = [
+ "bollard",
+ "bytes",
+ "chrono",
+ "clap",
+ "console",
+ "dialoguer",
+ "dirs",
+ "fs2",
+ "futures-util",
+ "git2",
+ "http-body-util",
+ "indicatif",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+ "which",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.15.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1474,35 +1503,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
-]
-
-[[package]]
-name = "treehouse"
-version = "0.8.0"
-dependencies = [
- "bollard",
- "bytes",
- "chrono",
- "clap",
- "console",
- "dialoguer",
- "dirs",
- "fs2",
- "futures-util",
- "git2",
- "http-body-util",
- "indicatif",
- "serde",
- "serde_json",
- "serde_yml",
- "sysinfo",
- "tar",
- "tempfile",
- "thiserror",
- "tokio",
- "url",
- "uuid",
- "which",
 ]
 
 [[package]]

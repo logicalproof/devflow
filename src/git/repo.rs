@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 pub struct GitRepo {
     pub repo: Repository,
@@ -11,13 +11,13 @@ pub struct GitRepo {
 
 impl GitRepo {
     pub fn discover() -> Result<Self> {
-        let repo = Repository::discover(".").map_err(|_| TreehouseError::NotGitRepo)?;
+        let repo = Repository::discover(".").map_err(|_| GrootError::NotGitRepo)?;
         let root = Self::resolve_root(&repo)?;
         Ok(Self { repo, root })
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let repo = Repository::open(path).map_err(|_| TreehouseError::NotGitRepo)?;
+        let repo = Repository::open(path).map_err(|_| GrootError::NotGitRepo)?;
         let root = Self::resolve_root(&repo)?;
         Ok(Self { repo, root })
     }
@@ -30,7 +30,7 @@ impl GitRepo {
         // commondir is e.g. `/repo/.git` — parent is the repo root
         let root = commondir
             .parent()
-            .ok_or(TreehouseError::NotGitRepo)?
+            .ok_or(GrootError::NotGitRepo)?
             .to_path_buf();
         Ok(root)
     }
@@ -40,7 +40,7 @@ impl GitRepo {
         Ok(head.peel_to_commit()?.id())
     }
 
-    pub fn treehouse_dir(&self) -> PathBuf {
-        self.root.join(".treehouse")
+    pub fn groot_dir(&self) -> PathBuf {
+        self.root.join(".groot")
     }
 }

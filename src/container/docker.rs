@@ -1,6 +1,6 @@
 use bollard::Docker;
 
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 pub struct DockerClient {
     pub client: Docker,
@@ -9,13 +9,13 @@ pub struct DockerClient {
 impl DockerClient {
     pub async fn connect() -> Result<Self> {
         let client =
-            Docker::connect_with_local_defaults().map_err(|_| TreehouseError::DockerNotAvailable)?;
+            Docker::connect_with_local_defaults().map_err(|_| GrootError::DockerNotAvailable)?;
 
         // Verify connection
         client
             .ping()
             .await
-            .map_err(|_| TreehouseError::DockerNotAvailable)?;
+            .map_err(|_| GrootError::DockerNotAvailable)?;
 
         Ok(Self { client })
     }

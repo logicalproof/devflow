@@ -11,7 +11,7 @@ use http_body_util::Full;
 use bytes::Bytes;
 
 use super::docker::DockerClient;
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 impl DockerClient {
     pub async fn create_and_start_container(
@@ -38,7 +38,7 @@ impl DockerClient {
             host_config: Some(host_config),
             labels: Some(HashMap::from([(
                 "managed-by".to_string(),
-                "treehouse".to_string(),
+                "groot".to_string(),
             )])),
             ..Default::default()
         };
@@ -87,10 +87,10 @@ impl DockerClient {
         let mut tar_builder = tar::Builder::new(Vec::new());
         tar_builder
             .append(&header, dockerfile_content.as_bytes())
-            .map_err(|e| TreehouseError::Other(format!("Failed to build tar: {e}")))?;
+            .map_err(|e| GrootError::Other(format!("Failed to build tar: {e}")))?;
         let tar_bytes = tar_builder
             .into_inner()
-            .map_err(|e| TreehouseError::Other(format!("Failed to finalize tar: {e}")))?;
+            .map_err(|e| GrootError::Other(format!("Failed to finalize tar: {e}")))?;
 
         let options = BuildImageOptions {
             t: Some(tag.to_string()),

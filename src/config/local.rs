@@ -43,7 +43,7 @@ impl LocalConfig {
 
     pub fn with_defaults() -> Self {
         Self {
-            tmux_session_name: "treehouse".to_string(),
+            tmux_session_name: "groot".to_string(),
             max_workers: 4,
             min_disk_space_mb: 500,
             compose_health_timeout_secs: default_compose_health_timeout_secs(),

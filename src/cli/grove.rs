@@ -8,7 +8,7 @@ use crate::compose::db as compose_db;
 use crate::config::local::LocalConfig;
 use crate::config::project::ProjectConfig;
 use crate::container::docker::DockerClient;
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 use crate::git::{branch, repo::GitRepo};
 use crate::orchestrator::{cleanup, state::GroveState, grove as orch_grove};
 use crate::tmux::{layout, session, workspace};
@@ -43,6 +43,9 @@ pub enum GroveCommands {
     Stop {
         /// Task name of the grove to stop
         task: String,
+        /// Force stop even if other trees share this grove's compose stack
+        #[arg(long)]
+        force: bool,
     },
     /// Start a stopped grove's containers
     Start {
@@ -100,7 +103,7 @@ pub async fn run(cmd: GroveCommands) -> Result<()> {
         } => plant(&task, &task_type, prompt, prompt_file, transplant, db_source).await,
         GroveCommands::List => list().await,
         GroveCommands::Status => status().await,
-        GroveCommands::Stop { task } => stop(&task).await,
+        GroveCommands::Stop { task, force } => stop(&task, force).await,
         GroveCommands::Start { task } => start(&task).await,
         GroveCommands::Uproot { task, force } => uproot(&task, force).await,
         GroveCommands::Prune => prune().await,
@@ -113,12 +116,12 @@ pub async fn run(cmd: GroveCommands) -> Result<()> {
     }
 }
 
-fn ensure_treehouse(git: &GitRepo) -> Result<std::path::PathBuf> {
-    let treehouse_dir = git.treehouse_dir();
-    if !treehouse_dir.join("config.yml").exists() {
-        return Err(TreehouseError::NotInitialized);
+fn ensure_groot(git: &GitRepo) -> Result<std::path::PathBuf> {
+    let groot_dir = git.groot_dir();
+    if !groot_dir.join("config.yml").exists() {
+        return Err(GrootError::NotInitialized);
     }
-    Ok(treehouse_dir)
+    Ok(groot_dir)
 }
 
 async fn plant(
@@ -130,13 +133,13 @@ async fn plant(
     db_source: Option<String>,
 ) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
-    let _ = cleanup_orphans(&treehouse_dir, &git);
+    let local = LocalConfig::load(&groot_dir.join("local.yml"))?;
+    let _ = cleanup_orphans(&groot_dir, &git);
 
     // Generate branch name from project config
-    let config = ProjectConfig::load(&treehouse_dir.join("config.yml"))?;
+    let config = ProjectConfig::load(&groot_dir.join("config.yml"))?;
     let branch_name = branch::format_branch_name(&config.project_name, task_type, task_name);
 
     // Resolve prompt text
@@ -144,7 +147,7 @@ async fn plant(
         (Some(p), _) => Some(p),
         (_, Some(path)) => {
             let text = std::fs::read_to_string(&path).map_err(|e| {
-                TreehouseError::Other(format!("Failed to read prompt file '{}': {e}", path.display()))
+                GrootError::Other(format!("Failed to read prompt file '{}': {e}", path.display()))
             })?;
             Some(text)
         }
@@ -161,7 +164,7 @@ async fn plant(
     // Plant the grove (always with compose)
     let state = orch_grove::plant(
         &git,
-        &treehouse_dir,
+        &groot_dir,
         task_name,
         &branch_name,
         task_type,
@@ -173,6 +176,8 @@ async fn plant(
         &local.compose_post_start,
         db_clone,
         resolved_db_source.as_deref(),
+        None, // not sharing another grove
+        None,
     )?;
 
     println!(
@@ -197,7 +202,7 @@ async fn plant(
     if let Some(ref ws) = state.tmux_session {
         println!(
             "\nAttach: {}",
-            style(format!("th grove attach {task_name}")).cyan()
+            style(format!("groot grove attach {task_name}")).cyan()
         );
         let _ = ws;
     }
@@ -207,10 +212,10 @@ async fn plant(
 
 async fn list() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let _ = cleanup_orphans(&treehouse_dir, &git);
+    let groot_dir = ensure_groot(&git)?;
+    let _ = cleanup_orphans(&groot_dir, &git);
 
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
     let groves: Vec<_> = groves.iter().filter(|g| g.compose_file.is_some()).collect();
 
     if groves.is_empty() {
@@ -256,11 +261,11 @@ async fn list() -> Result<()> {
 
 async fn status() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
-    let _ = cleanup_orphans(&treehouse_dir, &git);
+    let groot_dir = ensure_groot(&git)?;
+    let local = LocalConfig::load(&groot_dir.join("local.yml"))?;
+    let _ = cleanup_orphans(&groot_dir, &git);
 
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
     let groves: Vec<_> = groves.iter().filter(|g| g.compose_file.is_some()).collect();
 
     println!("{}", style("Grove Status").bold());
@@ -308,11 +313,11 @@ async fn status() -> Result<()> {
     Ok(())
 }
 
-async fn stop(task_name: &str) -> Result<()> {
+async fn stop(task_name: &str, force: bool) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    orch_grove::stop(&treehouse_dir, task_name)?;
+    orch_grove::stop(&groot_dir, task_name, force)?;
 
     println!(
         "{} Grove '{}' stopped (containers/tmux removed, worktree and branch preserved)",
@@ -321,7 +326,7 @@ async fn stop(task_name: &str) -> Result<()> {
     );
     println!(
         "  Re-plant with: {}",
-        style(format!("th grove plant {task_name}")).cyan()
+        style(format!("groot grove plant {task_name}")).cyan()
     );
 
     Ok(())
@@ -330,8 +335,8 @@ async fn stop(task_name: &str) -> Result<()> {
 async fn start(task_name: &str) -> Result<()> {
     let docker = DockerClient::connect().await?;
 
-    let container_name = format!("treehouse-{task_name}");
-    let image = format!("treehouse-{task_name}:latest");
+    let container_name = format!("groot-{task_name}");
+    let image = format!("groot-{task_name}:latest");
 
     if docker.container_exists(&container_name).await {
         println!("Container '{container_name}' already exists. Stopping first...");
@@ -354,9 +359,9 @@ async fn start(task_name: &str) -> Result<()> {
 
 async fn uproot(task_name: &str, force: bool) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    orch_grove::uproot(&git, &treehouse_dir, task_name, force)?;
+    orch_grove::uproot(&git, &groot_dir, task_name, force)?;
 
     println!(
         "{} Grove '{}' uprooted and resources cleaned up",
@@ -369,9 +374,9 @@ async fn uproot(task_name: &str, force: bool) -> Result<()> {
 
 async fn prune() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let orphans = cleanup::find_orphans(&treehouse_dir)?;
+    let orphans = cleanup::find_orphans(&groot_dir)?;
 
     if orphans.is_empty() {
         println!("No orphaned groves found.");
@@ -400,7 +405,7 @@ async fn prune() -> Result<()> {
     }
 
     for o in &orphans {
-        cleanup::cleanup_orphan(&treehouse_dir, &git.root, o)?;
+        cleanup::cleanup_orphan(&groot_dir, &git.root, o)?;
     }
 
     println!(
@@ -414,19 +419,19 @@ async fn prune() -> Result<()> {
 
 async fn transplant(task_name: &str, source: Option<String>) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
+    let groot_dir = ensure_groot(&git)?;
+    let local = LocalConfig::load(&groot_dir.join("local.yml"))?;
 
     // Load grove state
-    let state_path = GroveState::state_path(&treehouse_dir, task_name);
+    let state_path = GroveState::state_path(&groot_dir, task_name);
     if !state_path.exists() {
-        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
+        return Err(GrootError::GroveNotFound(task_name.to_string()));
     }
     let state = GroveState::load(&state_path)?;
 
     // Verify grove has a compose stack
     let compose_file = state.compose_file.as_ref().ok_or_else(|| {
-        TreehouseError::Other(format!(
+        GrootError::Other(format!(
             "Grove '{task_name}' has no compose stack. \
              Database transplanting requires a compose stack."
         ))
@@ -456,12 +461,12 @@ async fn transplant(task_name: &str, source: Option<String>) -> Result<()> {
 
 async fn attach(task_name: Option<&str>) -> Result<()> {
     if !session::is_available() {
-        return Err(TreehouseError::TmuxNotAvailable);
+        return Err(GrootError::TmuxNotAvailable);
     }
 
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groot_dir = ensure_groot(&git)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
 
     if groves.is_empty() {
         println!("No active groves. Plant a grove first.");
@@ -472,10 +477,10 @@ async fn attach(task_name: Option<&str>) -> Result<()> {
         let grove = groves
             .iter()
             .find(|g| g.task_name == name)
-            .ok_or_else(|| TreehouseError::GroveNotFound(name.to_string()))?;
+            .ok_or_else(|| GrootError::GroveNotFound(name.to_string()))?;
 
         let ws_name = grove.tmux_session.as_ref().ok_or_else(|| {
-            TreehouseError::Other(format!("Grove '{name}' has no tmux session"))
+            GrootError::Other(format!("Grove '{name}' has no tmux session"))
         })?;
 
         if session::session_exists(ws_name) {
@@ -503,7 +508,7 @@ async fn attach(task_name: Option<&str>) -> Result<()> {
 async fn build(task_name: &str) -> Result<()> {
     let docker = DockerClient::connect().await?;
 
-    let tag = format!("treehouse-{task_name}:latest");
+    let tag = format!("groot-{task_name}:latest");
     println!("Building image '{tag}'...");
 
     let dockerfile = "FROM ubuntu:22.04\nRUN apt-get update -qq\nCMD [\"sleep\", \"infinity\"]\n";
@@ -515,12 +520,12 @@ async fn build(task_name: &str) -> Result<()> {
 
 async fn set_layout(preset: &str) -> Result<()> {
     if !session::is_available() {
-        return Err(TreehouseError::TmuxNotAvailable);
+        return Err(GrootError::TmuxNotAvailable);
     }
 
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
+    let groot_dir = ensure_groot(&git)?;
+    let local = LocalConfig::load(&groot_dir.join("local.yml"))?;
     layout::apply_layout(&local.tmux_session_name, preset)?;
 
     println!(
@@ -533,9 +538,9 @@ async fn set_layout(preset: &str) -> Result<()> {
 
 async fn init_template() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let path = treehouse_dir.join("tmux-layout.json");
+    let path = groot_dir.join("tmux-layout.json");
     if path.exists() {
         println!(
             "{} Template already exists at {}",
@@ -562,9 +567,9 @@ async fn init_template() -> Result<()> {
 
 async fn init_claude_template() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let path = treehouse_dir.join("claude-md.template");
+    let path = groot_dir.join("claude-md.template");
     if path.exists() {
         println!(
             "{} Template already exists at {}",
@@ -592,12 +597,12 @@ async fn init_claude_template() -> Result<()> {
 }
 
 fn cleanup_orphans(
-    treehouse_dir: &std::path::Path,
+    groot_dir: &std::path::Path,
     git: &GitRepo,
 ) -> Result<()> {
-    let orphans = cleanup::find_orphans(treehouse_dir)?;
+    let orphans = cleanup::find_orphans(groot_dir)?;
     for orphan in &orphans {
-        cleanup::cleanup_orphan(treehouse_dir, &git.root, orphan)?;
+        cleanup::cleanup_orphan(groot_dir, &git.root, orphan)?;
     }
     if !orphans.is_empty() {
         println!(

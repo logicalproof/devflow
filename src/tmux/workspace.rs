@@ -49,10 +49,10 @@ pub struct WorkspaceVars<'a> {
     pub compose_file: Option<&'a Path>,
 }
 
-/// Load a workspace template from `.treehouse/tmux-layout.json`.
+/// Load a workspace template from `.groot/tmux-layout.json`.
 /// Returns `None` if the file doesn't exist.
-pub fn load_template(treehouse_dir: &Path) -> Result<Option<WorkspaceTemplate>> {
-    let path = treehouse_dir.join("tmux-layout.json");
+pub fn load_template(groot_dir: &Path) -> Result<Option<WorkspaceTemplate>> {
+    let path = groot_dir.join("tmux-layout.json");
     if !path.exists() {
         return Ok(None);
     }

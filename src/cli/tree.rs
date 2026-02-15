@@ -5,7 +5,7 @@ use console::style;
 
 use crate::config::local::LocalConfig;
 use crate::config::project::ProjectConfig;
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 use crate::git::{branch, repo::GitRepo, worktree as wt};
 use crate::orchestrator::grove as orch_grove;
 use crate::tmux::session;
@@ -25,6 +25,9 @@ pub enum TreeCommands {
         /// Launch claude with the prompt read from this file
         #[arg(long, conflicts_with = "prompt")]
         prompt_file: Option<PathBuf>,
+        /// Share a running grove's compose stack (db, redis) instead of running bare
+        #[arg(short = 'g', long)]
+        grove: Option<String>,
     },
     /// List all trees
     List,
@@ -56,8 +59,8 @@ pub enum TreeCommands {
 
 pub async fn run(cmd: TreeCommands) -> Result<()> {
     match cmd {
-        TreeCommands::Plant { task, task_type, prompt, prompt_file } => {
-            plant(&task, &task_type, prompt, prompt_file).await
+        TreeCommands::Plant { task, task_type, prompt, prompt_file, grove } => {
+            plant(&task, &task_type, prompt, prompt_file, grove).await
         }
         TreeCommands::List => list().await,
         TreeCommands::Status => status().await,
@@ -69,12 +72,28 @@ pub async fn run(cmd: TreeCommands) -> Result<()> {
     }
 }
 
-fn ensure_treehouse(git: &GitRepo) -> Result<std::path::PathBuf> {
-    let treehouse_dir = git.treehouse_dir();
-    if !treehouse_dir.join("config.yml").exists() {
-        return Err(TreehouseError::NotInitialized);
+fn ensure_groot(git: &GitRepo) -> Result<std::path::PathBuf> {
+    let groot_dir = git.groot_dir();
+    if !groot_dir.join("config.yml").exists() {
+        return Err(GrootError::NotInitialized);
     }
-    Ok(treehouse_dir)
+    Ok(groot_dir)
+}
+
+/// If the cwd is inside a grove's worktree, return that grove's task name.
+fn detect_grove_from_cwd(groot_dir: &std::path::Path) -> Option<String> {
+    let cwd = std::env::current_dir().ok()?;
+    let worktrees_dir = groot_dir.join("worktrees");
+    let relative = cwd.strip_prefix(&worktrees_dir).ok()?;
+    // First component of the relative path is the task name
+    let task_name = relative.components().next()?.as_os_str().to_str()?;
+    // Check if it's actually a grove (has compose_file)
+    let state = orch_grove::get_grove_by_name(groot_dir, task_name).ok()?;
+    if state.compose_file.is_some() {
+        Some(task_name.to_string())
+    } else {
+        None
+    }
 }
 
 async fn plant(
@@ -82,22 +101,66 @@ async fn plant(
     task_type: &str,
     prompt: Option<String>,
     prompt_file: Option<PathBuf>,
+    grove: Option<String>,
 ) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
+    let local = LocalConfig::load(&groot_dir.join("local.yml"))?;
 
     // Generate branch name from project config
-    let config = ProjectConfig::load(&treehouse_dir.join("config.yml"))?;
+    let config = ProjectConfig::load(&groot_dir.join("config.yml"))?;
     let branch_name = branch::format_branch_name(&config.project_name, task_type, task_name);
+
+    // Resolve grove: explicit --grove flag, or auto-detect from cwd inside a grove worktree
+    let auto_detected = grove.is_none();
+    let grove = grove.or_else(|| detect_grove_from_cwd(&groot_dir));
+
+    // If grove is set, validate it exists and has a running compose stack
+    let (shared_grove_name, shared_ports) = if let Some(ref grove_name) = grove {
+        let grove_state = orch_grove::get_grove_by_name(&groot_dir, grove_name)?;
+
+        if grove_state.compose_file.is_none() {
+            return Err(GrootError::Other(format!(
+                "'{grove_name}' is not a grove (no compose stack). \
+                 Use --grove with a grove that has a running compose stack."
+            )));
+        }
+
+        // Verify compose stack is running (tmux session exists as proxy)
+        if let Some(ref ws) = grove_state.tmux_session {
+            if !session::session_exists(ws) {
+                return Err(GrootError::Other(format!(
+                    "Grove '{grove_name}' tmux session is not running. \
+                     Start it first with: groot grove plant {grove_name}"
+                )));
+            }
+        }
+
+        let ports = grove_state.compose_ports.ok_or_else(|| {
+            GrootError::Other(format!(
+                "Grove '{grove_name}' has no allocated ports."
+            ))
+        })?;
+
+        if auto_detected {
+            println!(
+                "Auto-detected grove '{}' from current worktree",
+                grove_name
+            );
+        }
+
+        (Some(grove_name.as_str()), Some(ports))
+    } else {
+        (None, None)
+    };
 
     // Resolve prompt text
     let prompt_text = match (prompt, prompt_file) {
         (Some(p), _) => Some(p),
         (_, Some(path)) => {
             let text = std::fs::read_to_string(&path).map_err(|e| {
-                TreehouseError::Other(format!("Failed to read prompt file '{}': {e}", path.display()))
+                GrootError::Other(format!("Failed to read prompt file '{}': {e}", path.display()))
             })?;
             Some(text)
         }
@@ -112,7 +175,7 @@ async fn plant(
     // Plant the tree (no compose)
     let state = orch_grove::plant(
         &git,
-        &treehouse_dir,
+        &groot_dir,
         task_name,
         &branch_name,
         task_type,
@@ -124,6 +187,8 @@ async fn plant(
         &[],
         false,
         None,
+        shared_grove_name,
+        shared_ports.as_ref(),
     )?;
 
     println!(
@@ -134,11 +199,18 @@ async fn plant(
     println!("  Branch:   {}", state.branch);
     println!("  Worktree: {}", state.worktree_path.display());
 
+    if let Some(ref grove_name) = grove {
+        println!("  Shared:   grove '{grove_name}'");
+        if let Some(ref ports) = state.shared_compose_ports {
+            println!("  Ports:    app:{} db:{} redis:{}", ports.app, ports.db, ports.redis);
+        }
+    }
+
     if let Some(ref ws) = state.tmux_session {
         println!("  Session:  {ws}");
         println!(
             "\nAttach: {}",
-            style(format!("th tree attach {task_name}")).cyan()
+            style(format!("groot tree attach {task_name}")).cyan()
         );
     }
 
@@ -147,9 +219,9 @@ async fn plant(
 
 async fn list() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
     let trees: Vec<_> = groves.iter().filter(|g| g.compose_file.is_none()).collect();
 
     if trees.is_empty() {
@@ -172,13 +244,20 @@ async fn list() -> Result<()> {
             .map(|s| format!(" session:{s}"))
             .unwrap_or_default();
 
+        let shared_info = t
+            .shared_grove
+            .as_ref()
+            .map(|g| format!(" [shared: {g}]"))
+            .unwrap_or_default();
+
         println!(
-            "  {} {} [{}] branch:{}{}",
+            "  {} {} [{}] branch:{}{}{}",
             style("●").cyan(),
             t.task_name,
             status,
             t.branch,
-            session_info
+            session_info,
+            shared_info
         );
     }
 
@@ -187,9 +266,9 @@ async fn list() -> Result<()> {
 
 async fn status() -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
     let trees: Vec<_> = groves.iter().filter(|g| g.compose_file.is_none()).collect();
 
     println!("{}", style("Tree Status").bold());
@@ -220,6 +299,15 @@ async fn status() -> Result<()> {
                 };
                 println!("    Session:  {ws} [{active}]");
             }
+            if let Some(ref grove_name) = t.shared_grove {
+                println!("    Shared grove: {grove_name}");
+                if let Some(ref ports) = t.shared_compose_ports {
+                    println!(
+                        "    Shared ports: app:{} db:{} redis:{}",
+                        ports.app, ports.db, ports.redis
+                    );
+                }
+            }
         }
     }
 
@@ -228,9 +316,9 @@ async fn status() -> Result<()> {
 
 async fn stop(task_name: &str) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    orch_grove::stop(&treehouse_dir, task_name)?;
+    orch_grove::stop(&groot_dir, task_name, false)?;
 
     println!(
         "{} Tree '{}' stopped (tmux removed, worktree and branch preserved)",
@@ -239,7 +327,7 @@ async fn stop(task_name: &str) -> Result<()> {
     );
     println!(
         "  Re-plant with: {}",
-        style(format!("th tree plant {task_name}")).cyan()
+        style(format!("groot tree plant {task_name}")).cyan()
     );
 
     Ok(())
@@ -247,9 +335,9 @@ async fn stop(task_name: &str) -> Result<()> {
 
 async fn uproot(task_name: &str, force: bool) -> Result<()> {
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
+    let groot_dir = ensure_groot(&git)?;
 
-    orch_grove::uproot(&git, &treehouse_dir, task_name, force)?;
+    orch_grove::uproot(&git, &groot_dir, task_name, force)?;
 
     println!(
         "{} Tree '{}' uprooted and resources cleaned up",
@@ -294,7 +382,7 @@ async fn health() -> Result<()> {
         );
     } else {
         println!(
-            "\n{healthy} healthy, {unhealthy} unhealthy. Run 'th tree prune' to clean up."
+            "\n{healthy} healthy, {unhealthy} unhealthy. Run 'groot tree prune' to clean up."
         );
     }
 
@@ -303,12 +391,12 @@ async fn health() -> Result<()> {
 
 async fn attach(task_name: Option<&str>) -> Result<()> {
     if !session::is_available() {
-        return Err(TreehouseError::TmuxNotAvailable);
+        return Err(GrootError::TmuxNotAvailable);
     }
 
     let git = GitRepo::discover()?;
-    let treehouse_dir = ensure_treehouse(&git)?;
-    let groves = orch_grove::list_groves(&treehouse_dir)?;
+    let groot_dir = ensure_groot(&git)?;
+    let groves = orch_grove::list_groves(&groot_dir)?;
     let trees: Vec<_> = groves.iter().filter(|g| g.compose_file.is_none()).collect();
 
     if trees.is_empty() {
@@ -320,10 +408,10 @@ async fn attach(task_name: Option<&str>) -> Result<()> {
         let tree = trees
             .iter()
             .find(|t| t.task_name == name)
-            .ok_or_else(|| TreehouseError::GroveNotFound(name.to_string()))?;
+            .ok_or_else(|| GrootError::GroveNotFound(name.to_string()))?;
 
         let ws_name = tree.tmux_session.as_ref().ok_or_else(|| {
-            TreehouseError::Other(format!("Tree '{name}' has no tmux session"))
+            GrootError::Other(format!("Tree '{name}' has no tmux session"))
         })?;
 
         if session::session_exists(ws_name) {

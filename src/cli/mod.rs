@@ -8,7 +8,7 @@ pub mod tree;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "th", version, about = "Parallel AI-assisted development orchestrator")]
+#[command(name = "groot", version, about = "Parallel AI-assisted development orchestrator")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -16,7 +16,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a new treehouse project
+    /// Initialize a new groot project
     Init,
 
     /// Detect project type and frameworks

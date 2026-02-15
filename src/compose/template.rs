@@ -12,8 +12,8 @@ pub struct TemplateVars<'a> {
 
 /// Load a user-provided compose template, or fall back to the built-in default.
 /// Returns (template_content, is_custom).
-pub fn load_or_default(treehouse_dir: &Path) -> Result<(String, bool)> {
-    let custom_path = treehouse_dir.join("compose-template.yml");
+pub fn load_or_default(groot_dir: &Path) -> Result<(String, bool)> {
+    let custom_path = groot_dir.join("compose-template.yml");
     if custom_path.exists() {
         let contents = std::fs::read_to_string(&custom_path)?;
         return Ok((contents, true));
@@ -264,14 +264,14 @@ pub fn default_rails_template() -> &'static str {
     build:
       context: "{{WORKTREE_PATH}}"
       dockerfile: Dockerfile.dev
-    container_name: treehouse-{{WORKER_NAME}}-app
+    container_name: groot-{{WORKER_NAME}}-app
     command: ["sleep", "infinity"]
     ports:
       - "{{APP_PORT}}:3000"
     volumes:
       - "{{WORKTREE_PATH}}:/app"
-      - treehouse-{{WORKER_NAME}}-bundle:/usr/local/bundle
-      - treehouse-{{WORKER_NAME}}-node-modules:/app/node_modules
+      - groot-{{WORKER_NAME}}-bundle:/usr/local/bundle
+      - groot-{{WORKER_NAME}}-node-modules:/app/node_modules
     env_file:
       - path: "{{WORKTREE_PATH}}/.env"
         required: false
@@ -289,7 +289,7 @@ pub fn default_rails_template() -> &'static str {
 
   db:
     image: postgres:16-alpine
-    container_name: treehouse-{{WORKER_NAME}}-db
+    container_name: groot-{{WORKER_NAME}}-db
     ports:
       - "{{DB_PORT}}:5432"
     environment:
@@ -304,7 +304,7 @@ pub fn default_rails_template() -> &'static str {
 
   redis:
     image: redis:7-alpine
-    container_name: treehouse-{{WORKER_NAME}}-redis
+    container_name: groot-{{WORKER_NAME}}-redis
     ports:
       - "{{REDIS_PORT}}:6379"
     healthcheck:
@@ -314,7 +314,7 @@ pub fn default_rails_template() -> &'static str {
       retries: 5
 
 volumes:
-  treehouse-{{WORKER_NAME}}-bundle:
-  treehouse-{{WORKER_NAME}}-node-modules:
+  groot-{{WORKER_NAME}}-bundle:
+  groot-{{WORKER_NAME}}-node-modules:
 "#
 }

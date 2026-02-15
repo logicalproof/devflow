@@ -1,7 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::error::{TreehouseError, Result};
+use crate::error::{GrootError, Result};
 
 /// Create a new worktree at the given path for the given branch (shells out to git CLI)
 pub fn create_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> Result<()> {
@@ -14,7 +14,7 @@ pub fn create_worktree(repo_root: &Path, worktree_path: &Path, branch: &str) -> 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TreehouseError::GitCommand(format!(
+        return Err(GrootError::GitCommand(format!(
             "Failed to create worktree: {stderr}"
         )));
     }
@@ -31,7 +31,7 @@ pub fn remove_worktree(repo_root: &Path, worktree_path: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TreehouseError::GitCommand(format!(
+        return Err(GrootError::GitCommand(format!(
             "Failed to remove worktree: {stderr}"
         )));
     }
@@ -47,7 +47,7 @@ pub fn list_worktrees(repo_root: &Path) -> Result<Vec<WorktreeInfo>> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TreehouseError::GitCommand(format!(
+        return Err(GrootError::GitCommand(format!(
             "Failed to list worktrees: {stderr}"
         )));
     }
@@ -65,7 +65,7 @@ pub fn prune_worktrees(repo_root: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(TreehouseError::GitCommand(format!(
+        return Err(GrootError::GitCommand(format!(
             "Failed to prune worktrees: {stderr}"
         )));
     }

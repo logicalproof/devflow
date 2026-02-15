@@ -1,4 +1,3 @@
 /target
-.devflow/
-Dockerfile.devflow
+Dockerfile.groot
 .env
