@@ -93,7 +93,7 @@ async fn spawn(
 
     // Clean up orphans on spawn
     let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-    let _ = cleanup_orphans(&devflow_dir, &git, &local.tmux_session_name);
+    let _ = cleanup_orphans(&devflow_dir, &git);
 
     // Load task to get branch name
     let tasks_path = devflow_dir.join("tasks.json");
@@ -164,27 +164,22 @@ async fn spawn(
     );
     println!("  Branch:   {}", state.branch);
     println!("  Worktree: {}", state.worktree_path.display());
-    println!("  Tmux:     {}:{}", local.tmux_session_name, state.tmux_window);
 
     if let Some(ref ws) = state.tmux_session {
-        println!("  Workspace: {ws}");
-        println!(
-            "\nAttach to workspace: {}",
-            style(format!("tmux attach -t {ws}")).cyan()
-        );
+        println!("  Session:  {ws}");
     }
 
     if let Some(ref ports) = state.compose_ports {
-        println!("  Compose stack:");
+        println!("  Compose:");
         println!("    App:   http://localhost:{}", ports.app);
         println!("    DB:    localhost:{}", ports.db);
         println!("    Redis: localhost:{}", ports.redis);
     }
 
-    if state.tmux_session.is_none() {
+    if let Some(ref ws) = state.tmux_session {
         println!(
-            "\nAttach with: {}",
-            style(format!("devflow tmux attach")).cyan()
+            "\nAttach: {}",
+            style(format!("tmux attach -t {ws}")).cyan()
         );
     }
 
@@ -194,8 +189,7 @@ async fn spawn(
 async fn list() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-    let _ = cleanup_orphans(&devflow_dir, &git, &local.tmux_session_name);
+    let _ = cleanup_orphans(&devflow_dir, &git);
 
     let workers = orch_worker::list_workers(&devflow_dir)?;
 
@@ -219,13 +213,20 @@ async fn list() -> Result<()> {
             String::new()
         };
 
+        let session_info = w
+            .tmux_session
+            .as_ref()
+            .map(|s| format!(" session:{s}"))
+            .unwrap_or_default();
+
         println!(
-            "  {} {} [{}] branch:{} worktree:{}{}",
+            "  {} {} [{}] branch:{} worktree:{}{}{}",
             style("●").cyan(),
             w.task_name,
             status,
             w.branch,
             w.worktree_path.display(),
+            session_info,
             compose_info
         );
     }
@@ -236,9 +237,8 @@ async fn list() -> Result<()> {
 async fn kill(task_name: &str) -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
 
-    orch_worker::kill(&git, &devflow_dir, task_name, &local.tmux_session_name)?;
+    orch_worker::kill(&git, &devflow_dir, task_name)?;
 
     println!(
         "{} Worker '{}' killed and resources cleaned up",
@@ -253,12 +253,11 @@ async fn monitor() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
     let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-    let _ = cleanup_orphans(&devflow_dir, &git, &local.tmux_session_name);
+    let _ = cleanup_orphans(&devflow_dir, &git);
 
     let workers = orch_worker::list_workers(&devflow_dir)?;
 
     println!("{}", style("Worker Monitor").bold());
-    println!("Session: {}", local.tmux_session_name);
     println!("Max workers: {}", local.max_workers);
     println!("Active: {}/{}", workers.len(), local.max_workers);
     println!();
@@ -279,6 +278,9 @@ async fn monitor() -> Result<()> {
             );
             println!("    Branch:   {}", w.branch);
             println!("    Worktree: {}", w.worktree_path.display());
+            if let Some(ref ws) = w.tmux_session {
+                println!("    Session:  {ws}");
+            }
             if let Some(ref ports) = w.compose_ports {
                 println!(
                     "    Compose:  app:{} db:{} redis:{}",
@@ -294,9 +296,8 @@ async fn monitor() -> Result<()> {
 async fn cleanup_cmd() -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
 
-    let orphans = cleanup::find_orphans(&devflow_dir, &local.tmux_session_name)?;
+    let orphans = cleanup::find_orphans(&devflow_dir)?;
 
     if orphans.is_empty() {
         println!("No orphaned workers found.");
@@ -382,9 +383,8 @@ async fn db_clone_cmd(task_name: &str, source: Option<String>) -> Result<()> {
 fn cleanup_orphans(
     devflow_dir: &std::path::Path,
     git: &GitRepo,
-    tmux_session: &str,
 ) -> Result<()> {
-    let orphans = cleanup::find_orphans(devflow_dir, tmux_session)?;
+    let orphans = cleanup::find_orphans(devflow_dir)?;
     for orphan in &orphans {
         cleanup::cleanup_orphan(devflow_dir, &git.root, orphan)?;
     }

@@ -11,7 +11,9 @@ pub struct WorkerState {
     pub task_name: String,
     pub branch: String,
     pub worktree_path: PathBuf,
-    pub tmux_window: String,
+    /// Deprecated: was the hub session window name. Kept for backward compat with old state files.
+    #[serde(default)]
+    pub tmux_window: Option<String>,
     pub container_id: Option<String>,
     pub created_at: DateTime<Utc>,
     pub pid: Option<u32>,

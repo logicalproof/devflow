@@ -10,12 +10,10 @@ use crate::tmux::{layout, session, workspace};
 
 #[derive(Subcommand)]
 pub enum TmuxCommands {
-    /// Attach to the devflow hub tmux session
-    Attach,
-    /// Attach to a worker's per-task workspace session
-    AttachWorker {
-        /// Task name of the worker to attach to
-        task: String,
+    /// Attach to a worker's tmux session (picks first if no task specified)
+    Attach {
+        /// Task name of the worker to attach to (optional — attaches to first worker if omitted)
+        task: Option<String>,
     },
     /// Set layout for tmux panes
     Layout {
@@ -32,8 +30,7 @@ pub enum TmuxCommands {
 
 pub async fn run(cmd: TmuxCommands) -> Result<()> {
     match cmd {
-        TmuxCommands::Attach => attach().await,
-        TmuxCommands::AttachWorker { task } => attach_worker(&task).await,
+        TmuxCommands::Attach { task } => attach(task.as_deref()).await,
         TmuxCommands::Layout { preset } => set_layout(&preset).await,
         TmuxCommands::Status => status().await,
         TmuxCommands::InitTemplate => init_template().await,
@@ -41,63 +38,50 @@ pub async fn run(cmd: TmuxCommands) -> Result<()> {
     }
 }
 
-fn load_session_name() -> Result<String> {
-    let git = GitRepo::discover()?;
-    let devflow_dir = git.devflow_dir();
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-    Ok(local.tmux_session_name)
-}
-
-async fn attach() -> Result<()> {
+async fn attach(task_name: Option<&str>) -> Result<()> {
     if !session::is_available() {
         return Err(DevflowError::TmuxNotAvailable);
     }
 
-    let session_name = load_session_name()?;
+    let git = GitRepo::discover()?;
+    let devflow_dir = git.devflow_dir();
+    let workers = orch_worker::list_workers(&devflow_dir)?;
 
-    if !session::session_exists(&session_name) {
-        println!("No devflow session found. Spawn a worker first.");
+    if workers.is_empty() {
+        println!("No active workers. Spawn a worker first.");
         return Ok(());
     }
 
-    session::attach_session(&session_name)?;
-    Ok(())
-}
+    // If a task name is given, attach to that worker's session
+    if let Some(name) = task_name {
+        let worker = workers
+            .iter()
+            .find(|w| w.task_name == name)
+            .ok_or_else(|| DevflowError::WorkerNotFound(name.to_string()))?;
 
-async fn attach_worker(task_name: &str) -> Result<()> {
-    if !session::is_available() {
-        return Err(DevflowError::TmuxNotAvailable);
-    }
+        let ws_name = worker.tmux_session.as_ref().ok_or_else(|| {
+            DevflowError::Other(format!("Worker '{name}' has no tmux session"))
+        })?;
 
-    let git = GitRepo::discover()?;
-    let devflow_dir = git.devflow_dir();
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-
-    // Check if the worker has a per-task workspace session
-    let workers = orch_worker::list_workers(&devflow_dir)?;
-    let worker = workers
-        .iter()
-        .find(|w| w.task_name == task_name)
-        .ok_or_else(|| DevflowError::WorkerNotFound(task_name.to_string()))?;
-
-    if let Some(ref ws_name) = worker.tmux_session {
         if session::session_exists(ws_name) {
             session::attach_session(ws_name)?;
-            return Ok(());
+        } else {
+            println!("Session '{ws_name}' no longer exists.");
         }
-        println!(
-            "Workspace session '{}' not found. Falling back to hub session.",
-            ws_name
-        );
+        return Ok(());
     }
 
-    // Fall back to hub session
-    if session::session_exists(&local.tmux_session_name) {
-        session::attach_session(&local.tmux_session_name)?;
-    } else {
-        println!("No devflow session found. Spawn a worker first.");
+    // No task specified — attach to first worker's session
+    for w in &workers {
+        if let Some(ref ws_name) = w.tmux_session {
+            if session::session_exists(ws_name) {
+                session::attach_session(ws_name)?;
+                return Ok(());
+            }
+        }
     }
 
+    println!("No active worker sessions found.");
     Ok(())
 }
 
@@ -106,14 +90,15 @@ async fn set_layout(preset: &str) -> Result<()> {
         return Err(DevflowError::TmuxNotAvailable);
     }
 
-    let session_name = load_session_name()?;
-    layout::apply_layout(&session_name, preset)?;
+    let git = GitRepo::discover()?;
+    let devflow_dir = git.devflow_dir();
+    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
+    layout::apply_layout(&local.tmux_session_name, preset)?;
 
     println!(
-        "{} Applied layout '{}' to session '{}'",
+        "{} Applied layout '{}'",
         style("✓").green().bold(),
         preset,
-        session_name
     );
     Ok(())
 }
@@ -125,37 +110,16 @@ async fn status() -> Result<()> {
 
     let git = GitRepo::discover()?;
     let devflow_dir = git.devflow_dir();
-    let local = LocalConfig::load(&devflow_dir.join("local.yml"))?;
-    let session_name = &local.tmux_session_name;
+    let workers = orch_worker::list_workers(&devflow_dir)?;
 
-    if !session::session_exists(session_name) {
-        println!("No devflow tmux session active.");
+    if workers.is_empty() {
+        println!("No active workers.");
         return Ok(());
     }
 
-    let windows = session::list_windows(session_name)?;
-    println!(
-        "{} Hub session '{}' with {} window(s):",
-        style("✓").green().bold(),
-        session_name,
-        windows.len()
-    );
-    for w in &windows {
-        println!("  - {w}");
-    }
-
-    // Show per-worker sessions
-    let workers = orch_worker::list_workers(&devflow_dir)?;
-    let workspace_workers: Vec<_> = workers
-        .iter()
-        .filter(|w| w.tmux_session.is_some())
-        .collect();
-
-    if !workspace_workers.is_empty() {
-        println!();
-        println!("{}", style("Worker workspace sessions:").bold());
-        for w in &workspace_workers {
-            let ws_name = w.tmux_session.as_ref().unwrap();
+    println!("{}", style("Worker sessions:").bold());
+    for w in &workers {
+        if let Some(ref ws_name) = w.tmux_session {
             let active = if session::session_exists(ws_name) {
                 style("active").green()
             } else {
@@ -172,6 +136,13 @@ async fn status() -> Result<()> {
                 ws_name,
                 active,
                 win_count
+            );
+        } else {
+            println!(
+                "  {} {} [{}]",
+                style("●").red(),
+                w.task_name,
+                style("no session").red()
             );
         }
     }
@@ -208,9 +179,6 @@ async fn init_template() -> Result<()> {
         path.display()
     );
     println!("  Edit it to customize your per-worker workspace layout.");
-    println!(
-        "  Workers spawned with a template get a dedicated tmux session with multiple windows/panes."
-    );
 
     Ok(())
 }

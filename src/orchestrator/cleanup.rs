@@ -6,8 +6,8 @@ use crate::tmux::{session, workspace};
 
 use super::state::WorkerState;
 
-/// Find orphaned workers (state file exists but tmux window is gone)
-pub fn find_orphans(devflow_dir: &Path, tmux_session: &str) -> Result<Vec<WorkerState>> {
+/// Find orphaned workers (state file exists but tmux session is gone)
+pub fn find_orphans(devflow_dir: &Path) -> Result<Vec<WorkerState>> {
     let workers_dir = devflow_dir.join("workers");
     if !workers_dir.exists() {
         return Ok(Vec::new());
@@ -19,8 +19,12 @@ pub fn find_orphans(devflow_dir: &Path, tmux_session: &str) -> Result<Vec<Worker
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "json") {
             if let Ok(state) = WorkerState::load(&path) {
-                // Check if the tmux window still exists
-                if !session::window_exists(tmux_session, &state.tmux_window) {
+                // Check if the per-worker tmux session still exists
+                let session_alive = state
+                    .tmux_session
+                    .as_ref()
+                    .is_some_and(|ws| session::session_exists(ws));
+                if !session_alive {
                     orphans.push(state);
                 }
             }

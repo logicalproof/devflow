@@ -264,10 +264,23 @@ pub fn spawn(
         }
     }
 
-    // 6a. Create hub tmux window (always)
-    let tmux_window = task_name.to_string();
-    if let Err(e) = session::create_window(tmux_session, &tmux_window, &worktree_path) {
-        // Rollback compose if it was started
+    // 6. Create per-worker tmux workspace session
+    let ws_template = workspace::load_template(devflow_dir)?
+        .unwrap_or_else(workspace::default_template);
+
+    let vars = workspace::WorkspaceVars {
+        worktree_path: &worktree_path.to_string_lossy(),
+        worker_name: task_name,
+        app_port: compose_ports.as_ref().map(|p| p.app),
+        db_port: compose_ports.as_ref().map(|p| p.db),
+        redis_port: compose_ports.as_ref().map(|p| p.redis),
+        compose_file: compose_file.as_deref(),
+    };
+    let rendered = workspace::render_template(&ws_template, &vars);
+    let ws_name = workspace::worker_session_name(tmux_session, task_name);
+
+    if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path, compose_file.as_deref()) {
+        workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = compose_file {
             let _ = compose_mgr::down(cf);
             let _ = ports::release(devflow_dir, task_name);
@@ -281,56 +294,12 @@ pub fn spawn(
         return Err(e);
     }
 
-    // 6b. Create per-worker workspace session if template exists
-    let ws_template = workspace::load_template(devflow_dir)?;
-    let mut worker_session_name_opt: Option<String> = None;
-
-    if let Some(ref template) = ws_template {
-        let vars = workspace::WorkspaceVars {
-            worktree_path: &worktree_path.to_string_lossy(),
-            worker_name: task_name,
-            app_port: compose_ports.as_ref().map(|p| p.app),
-            db_port: compose_ports.as_ref().map(|p| p.db),
-            redis_port: compose_ports.as_ref().map(|p| p.redis),
-            compose_file: compose_file.as_deref(),
-        };
-        let rendered = workspace::render_template(template, &vars);
-        let ws_name = workspace::worker_session_name(tmux_session, task_name);
-
-        if let Err(e) = workspace::create_worker_session(&ws_name, &rendered, &worktree_path, compose_file.as_deref()) {
-            // Rollback partial session
-            workspace::destroy_worker_session(&ws_name);
-            let _ = session::kill_window(tmux_session, &tmux_window);
-            if let Some(ref cf) = compose_file {
-                let _ = compose_mgr::down(cf);
-                let _ = ports::release(devflow_dir, task_name);
-                let compose_dir = devflow_dir.join("compose").join(task_name);
-                let _ = std::fs::remove_dir_all(compose_dir);
-            }
-            let _ = worktree::remove_worktree(&git.root, &worktree_path);
-            if branch_created {
-                let _ = branch::delete_branch(git, branch_name);
-            }
-            return Err(e);
-        }
-
-        worker_session_name_opt = Some(ws_name);
-    }
-
     // 7. Send initial command if provided
     if let Some(cmd) = initial_command {
-        if let Some(ref ws_name) = worker_session_name_opt {
-            // Send to the first window's first pane in the per-worker session
-            if let Some(first_win) = ws_template.as_ref().and_then(|t| t.windows.first()) {
-                let target = format!("{ws_name}:{}.0", first_win.name);
-                if let Err(e) = session::send_keys_to_pane(&target, cmd) {
-                    eprintln!("Warning: failed to send initial command to workspace: {e}");
-                }
-            }
-        } else {
-            // No workspace — send to hub window as before
-            if let Err(e) = session::send_keys(tmux_session, &tmux_window, cmd) {
-                eprintln!("Warning: failed to send initial command: {e}");
+        if let Some(first_win) = ws_template.windows.first() {
+            let target = format!("{ws_name}:{}.0", first_win.name);
+            if let Err(e) = session::send_keys_to_pane(&target, cmd) {
+                eprintln!("Warning: failed to send initial command to workspace: {e}");
             }
         }
     }
@@ -340,28 +309,23 @@ pub fn spawn(
         task_name: task_name.to_string(),
         branch: branch_name.to_string(),
         worktree_path: worktree_path.clone(),
-        tmux_window: tmux_window.clone(),
+        tmux_window: None,
         container_id: None,
         created_at: chrono::Utc::now(),
         pid: None,
         compose_file,
         compose_ports,
-        tmux_session: worker_session_name_opt,
+        tmux_session: Some(ws_name.clone()),
     };
 
     if let Err(e) = state.save(&state_path) {
-        // Rollback workspace session
-        if let Some(ref ws) = state.tmux_session {
-            workspace::destroy_worker_session(ws);
-        }
-        // Rollback compose if it was started
+        workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = state.compose_file {
             let _ = compose_mgr::down(cf);
             let _ = ports::release(devflow_dir, task_name);
             let compose_dir = devflow_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
-        let _ = session::kill_window(tmux_session, &tmux_window);
         let _ = worktree::remove_worktree(&git.root, &worktree_path);
         if branch_created {
             let _ = branch::delete_branch(git, branch_name);
@@ -372,8 +336,8 @@ pub fn spawn(
     Ok(state)
 }
 
-/// Kill a worker: tear down compose stack, remove tmux window, worktree, branch, and state file
-pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, tmux_session: &str) -> Result<()> {
+/// Kill a worker: tear down compose stack, remove tmux session, worktree, branch, and state file
+pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str) -> Result<()> {
     let state_path = WorkerState::state_path(devflow_dir, task_name);
     if !state_path.exists() {
         return Err(DevflowError::WorkerNotFound(task_name.to_string()));
@@ -391,13 +355,10 @@ pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, tmux_session: &s
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
-    // Kill per-worker tmux session if present
+    // Kill per-worker tmux session
     if let Some(ref ws) = state.tmux_session {
         workspace::destroy_worker_session(ws);
     }
-
-    // Kill hub tmux window (ignore errors - may already be gone)
-    let _ = session::kill_window(tmux_session, &state.tmux_window);
 
     // Remove worktree
     if state.worktree_path.exists() {
