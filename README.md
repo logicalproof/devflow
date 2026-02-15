@@ -11,6 +11,7 @@ The typical problem: you're waiting on Claude Code to finish a feature, but you 
 - **tmux** (worker windows live in a shared tmux session)
 - **Docker** (optional — only needed for container features)
 - **Docker Compose** (optional — only needed for `--compose` per-worker isolation)
+- **pg_dump** (optional — only needed for `--db-clone`; install via `brew install libpq` on macOS)
 
 ## Installation
 
@@ -157,6 +158,11 @@ devflow worker spawn my-feature --compose
 # =>     DB:    localhost:5433
 # =>     Redis: localhost:6380
 
+# Spawn with --compose AND clone your host database into the container
+devflow worker spawn my-feature --compose --db-clone
+# => Auto-detects source database from config/database.yml
+# => Pipes pg_dump from host into the container's PostgreSQL
+
 # List all active workers
 devflow worker list
 # => Active workers:
@@ -191,6 +197,14 @@ devflow worker monitor
 # => Active: 2/4
 # =>   ● my-feature (uptime: 1h 23m)
 # =>   ● fix-login (uptime: 0h 45m)
+
+# Clone your host database into a running worker's container
+devflow worker db-clone my-feature
+# => Auto-detects source DB from config/database.yml
+# => Pipes pg_dump → docker compose exec db psql
+
+# Clone from a specific database URL
+devflow worker db-clone my-feature --source postgres://localhost:5432/myapp_development
 
 # Manually clean up orphaned workers (containers, worktrees, state)
 devflow worker cleanup
@@ -350,10 +364,12 @@ devflow containerize
 # =>     React Native
 # =>     Custom (Ubuntu base)
 # => ? Write Dockerfile to project? (Y/n)
-# => ✓ Wrote /path/to/Dockerfile.devflow
+# => ✓ Wrote /path/to/Dockerfile.dev
 ```
 
-Writes a `Dockerfile.devflow` to your project root and enables container support in the config. The wizard also offers to generate a `compose-template.yml` for use with `--compose` per-worker stacks.
+Writes a `Dockerfile.dev` to your project root and enables container support in the config. The wizard also offers to generate a `compose-template.yml` for use with `--compose` per-worker stacks.
+
+If your project already has a `Dockerfile.dev` (e.g., from an existing docker-compose setup), devflow will use it directly — no extra configuration needed. The default compose template references `Dockerfile.dev` and includes health-checked PostgreSQL and Redis services, with named volumes for bundle cache and node_modules.
 
 ### `devflow commit`
 
