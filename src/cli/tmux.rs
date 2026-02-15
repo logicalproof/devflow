@@ -205,11 +205,11 @@ async fn init_claude_template() -> Result<()> {
     std::fs::write(&path, claude_md::default_template())?;
 
     println!(
-        "{} Created CLAUDE.md template at {}",
+        "{} Created CLAUDE.local.md template at {}",
         style("✓").green().bold(),
         path.display()
     );
-    println!("  Edit it to customize the CLAUDE.md generated in each worker's worktree.");
+    println!("  Edit it to customize the CLAUDE.local.md generated in each worker's worktree.");
     println!("  Available variables: {{{{WORKTREE_PATH}}}}, {{{{WORKER_NAME}}}}, {{{{BRANCH_NAME}}}},");
     println!("    {{{{PROJECT_NAME}}}}, {{{{TASK_TYPE}}}}, {{{{DETECTED_TYPES}}}}, {{{{COMPOSE_FILE}}}},");
     println!("    {{{{COMPOSE_PROJECT}}}}, {{{{APP_PORT}}}}, {{{{DB_PORT}}}}, {{{{REDIS_PORT}}}}");

@@ -265,6 +265,8 @@ pub fn default_rails_template() -> &'static str {
       context: "{{WORKTREE_PATH}}"
       dockerfile: Dockerfile.devflow
     container_name: devflow-{{WORKER_NAME}}-app
+    command: >
+      bash -c "rm -f tmp/pids/server.pid && sleep infinity"
     ports:
       - "{{APP_PORT}}:3000"
     volumes:
@@ -273,9 +275,11 @@ pub fn default_rails_template() -> &'static str {
       - path: "{{WORKTREE_PATH}}/.env"
         required: false
     environment:
+      - RAILS_ENV=development
       - DATABASE_URL=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_dev
       - REDIS_URL=redis://redis:6379/0
       - BUNDLE_DEPLOYMENT=
+      - BUNDLE_WITHOUT=
     depends_on:
       - db
       - redis

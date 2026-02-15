@@ -91,7 +91,15 @@ pub async fn run() -> Result<()> {
 
     // Ensure .env is in .gitignore to prevent secrets from being committed
     ensure_gitignore_entry(&git.root, ".env");
-    ensure_gitignore_entry(&git.root, ".devflow/");
+    ensure_gitignore_entry(&git.root, ".devflow/worktrees/");
+    ensure_gitignore_entry(&git.root, ".devflow/workers/");
+    ensure_gitignore_entry(&git.root, ".devflow/compose/");
+    ensure_gitignore_entry(&git.root, ".devflow/locks/");
+    ensure_gitignore_entry(&git.root, ".devflow/tasks/");
+    ensure_gitignore_entry(&git.root, ".devflow/local.yml");
+    ensure_gitignore_entry(&git.root, ".devflow/ports.json");
+    ensure_gitignore_entry(&git.root, ".devflow/ports.json.lock");
+    ensure_gitignore_entry(&git.root, ".devflow/tasks.json");
 
     println!(
         "{} Initialized devflow for project '{}'",

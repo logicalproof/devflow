@@ -231,7 +231,7 @@ pub fn spawn(
         compose_ports = Some(allocated);
     }
 
-    // 5g. Generate CLAUDE.md in worktree (non-fatal)
+    // 5g. Generate CLAUDE.local.md in worktree (non-fatal)
     {
         let config_path = devflow_dir.join("config.yml");
         let project_name = ProjectConfig::load(&config_path)
@@ -275,8 +275,8 @@ pub fn spawn(
         };
 
         match claude_md::generate(&worktree_path, devflow_dir, &vars) {
-            Ok(()) => println!("Generated CLAUDE.md in worktree"),
-            Err(e) => eprintln!("Warning: failed to generate CLAUDE.md: {e}"),
+            Ok(()) => println!("Generated CLAUDE.local.md in worktree"),
+            Err(e) => eprintln!("Warning: failed to generate CLAUDE.local.md: {e}"),
         }
     }
 
