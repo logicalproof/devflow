@@ -31,6 +31,40 @@ pub fn render(template: &str, vars: &TemplateVars) -> String {
         .replace("{{WORKTREE_PATH}}", vars.worktree_path)
 }
 
+/// Detect if a Dockerfile has a stage named "build" (multi-stage).
+/// If so, devflow should target it for dev containers since it has build tools.
+pub fn detect_build_target(dockerfile_path: &Path) -> Option<String> {
+    let contents = std::fs::read_to_string(dockerfile_path).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim().to_lowercase();
+        // Match: FROM ... AS build
+        if trimmed.starts_with("from ") && trimmed.ends_with(" as build") {
+            return Some("build".to_string());
+        }
+    }
+    None
+}
+
+/// Inject a `target:` directive under the `build:` section of a compose file.
+pub fn inject_build_target(rendered: &str, target: &str) -> String {
+    let mut result = String::new();
+    let mut injected = false;
+
+    for line in rendered.lines() {
+        result.push_str(line);
+        result.push('\n');
+
+        if !injected && line.trim().starts_with("dockerfile:") {
+            let indent = &line[..line.len() - line.trim_start().len()];
+            result.push_str(indent);
+            result.push_str(&format!("target: {target}\n"));
+            injected = true;
+        }
+    }
+
+    result
+}
+
 /// Extract ARG names from a Dockerfile that have a matching key in the .env file.
 /// Only includes ARGs where the .env provides a value, so Dockerfile defaults are preserved.
 pub fn extract_dockerfile_args(dockerfile_path: &Path, env_path: &Path) -> Vec<String> {
@@ -265,6 +299,7 @@ pub fn default_rails_template() -> &'static str {
       context: "{{WORKTREE_PATH}}"
       dockerfile: Dockerfile.devflow
     container_name: devflow-{{WORKER_NAME}}-app
+    user: root
     command: >
       bash -c "rm -f tmp/pids/server.pid && sleep infinity"
     ports:

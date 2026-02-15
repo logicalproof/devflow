@@ -63,6 +63,14 @@ pub fn generate_compose_file(
         );
     }
 
+    // Auto-detect multi-stage Dockerfile and target the build stage for dev
+    let rendered = if let Some(target) = template::detect_build_target(&dockerfile_path) {
+        println!("  Multi-stage Dockerfile detected, targeting '{target}' stage");
+        template::inject_build_target(&rendered, &target)
+    } else {
+        rendered
+    };
+
     // Auto-extract build secrets (RUN --mount=type=secret) from Dockerfile
     let build_secrets = template::extract_dockerfile_secrets(&dockerfile_path, &env_path);
     let rendered = if !build_secrets.is_empty() {
@@ -262,21 +270,30 @@ pub fn wait_healthy(compose_file: &Path, timeout: Duration) -> Result<()> {
 
 /// Execute a command inside a running compose service (non-interactive).
 pub fn exec(compose_file: &Path, service: &str, cmd: &str) -> Result<()> {
+    exec_as_user(compose_file, service, cmd, None)
+}
+
+/// Execute a command inside a running compose service as a specific user.
+pub fn exec_as_user(compose_file: &Path, service: &str, cmd: &str, user: Option<&str>) -> Result<()> {
     let project = project_name(compose_file);
+    let compose_path = compose_file.to_string_lossy();
+    let mut args = vec![
+        "compose",
+        "-f",
+        &compose_path,
+        "-p",
+        &project,
+        "exec",
+        "-T",
+    ];
+    if let Some(u) = user {
+        args.push("--user");
+        args.push(u);
+    }
+    args.extend([service, "sh", "-c", cmd]);
+
     let output = Command::new("docker")
-        .args([
-            "compose",
-            "-f",
-            &compose_file.to_string_lossy(),
-            "-p",
-            &project,
-            "exec",
-            "-T",
-            service,
-            "sh",
-            "-c",
-            cmd,
-        ])
+        .args(&args)
         .output()?;
 
     let stdout = String::from_utf8_lossy(&output.stdout);

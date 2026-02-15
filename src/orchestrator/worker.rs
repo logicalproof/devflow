@@ -188,7 +188,14 @@ pub fn spawn(
             return Err(e);
         }
 
-        // 5e½. Database setup (non-fatal: warn on failure, don't tear down)
+        // 5e½. Install dev/test gems (non-fatal: production Dockerfiles exclude them)
+        println!("Installing dev/test gems...");
+        match compose_mgr::exec(&cf, "app", "bundle install --quiet") {
+            Ok(()) => println!("  Gems installed."),
+            Err(e) => eprintln!("  Warning: bundle install failed: {e}"),
+        }
+
+        // 5e¾. Database setup (non-fatal: warn on failure, don't tear down)
         if db_clone {
             // Resolve source: explicit flag > config > auto-detect from worktree
             let source = if let Some(src) = db_source {
