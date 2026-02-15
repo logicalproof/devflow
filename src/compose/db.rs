@@ -56,7 +56,7 @@ pub fn detect_source_db(worktree_path: &Path) -> Result<String> {
         if trimmed.starts_with("database:") || trimmed.starts_with("database :") {
             let leading_spaces = line.len() - line.trim_start().len();
             if let Some(level) = indent_level {
-                if leading_spaces <= level {
+                if leading_spaces < level {
                     // We've left the development section
                     break;
                 }
@@ -104,7 +104,7 @@ pub fn detect_source_db(worktree_path: &Path) -> Result<String> {
             .ok()
             .and_then(|content| {
                 // Format: "gitdir: /path/to/repo/.git/worktrees/task-name"
-                content.split('/').rev().nth(2).map(|s| s.to_string())
+                content.split('/').rev().nth(3).map(|s| s.to_string())
             })
             .unwrap_or(dir_name)
     } else {
