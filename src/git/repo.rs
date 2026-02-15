@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use git2::Repository;
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 pub struct GitRepo {
     pub repo: Repository,
@@ -11,19 +11,19 @@ pub struct GitRepo {
 
 impl GitRepo {
     pub fn discover() -> Result<Self> {
-        let repo = Repository::discover(".").map_err(|_| DevflowError::NotGitRepo)?;
+        let repo = Repository::discover(".").map_err(|_| TreehouseError::NotGitRepo)?;
         let root = repo
             .workdir()
-            .ok_or(DevflowError::NotGitRepo)?
+            .ok_or(TreehouseError::NotGitRepo)?
             .to_path_buf();
         Ok(Self { repo, root })
     }
 
     pub fn open(path: &Path) -> Result<Self> {
-        let repo = Repository::open(path).map_err(|_| DevflowError::NotGitRepo)?;
+        let repo = Repository::open(path).map_err(|_| TreehouseError::NotGitRepo)?;
         let root = repo
             .workdir()
-            .ok_or(DevflowError::NotGitRepo)?
+            .ok_or(TreehouseError::NotGitRepo)?
             .to_path_buf();
         Ok(Self { repo, root })
     }
@@ -33,7 +33,7 @@ impl GitRepo {
         Ok(head.peel_to_commit()?.id())
     }
 
-    pub fn devflow_dir(&self) -> PathBuf {
-        self.root.join(".devflow")
+    pub fn treehouse_dir(&self) -> PathBuf {
+        self.root.join(".treehouse")
     }
 }

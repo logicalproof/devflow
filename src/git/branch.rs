@@ -1,4 +1,4 @@
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 use super::repo::GitRepo;
 
@@ -17,7 +17,7 @@ pub fn create_branch(git: &GitRepo, branch_name: &str) -> Result<()> {
     let commit = head.peel_to_commit()?;
 
     if git.repo.find_branch(branch_name, git2::BranchType::Local).is_ok() {
-        return Err(DevflowError::BranchAlreadyExists(branch_name.to_string()));
+        return Err(TreehouseError::BranchAlreadyExists(branch_name.to_string()));
     }
 
     git.repo.branch(branch_name, &commit, false)?;
@@ -29,7 +29,7 @@ pub fn delete_branch(git: &GitRepo, branch_name: &str) -> Result<()> {
     let mut branch = git
         .repo
         .find_branch(branch_name, git2::BranchType::Local)
-        .map_err(|_| DevflowError::Other(format!("Branch not found: {branch_name}")))?;
+        .map_err(|_| TreehouseError::Other(format!("Branch not found: {branch_name}")))?;
     branch.delete()?;
     Ok(())
 }

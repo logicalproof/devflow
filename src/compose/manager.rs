@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 use super::ports::AllocatedPorts;
 use super::template::{self, TemplateVars};
@@ -12,27 +12,27 @@ pub fn check_available() -> Result<()> {
     let output = Command::new("docker")
         .args(["compose", "version"])
         .output()
-        .map_err(|_| DevflowError::ComposeNotAvailable)?;
+        .map_err(|_| TreehouseError::ComposeNotAvailable)?;
 
     if !output.status.success() {
-        return Err(DevflowError::ComposeNotAvailable);
+        return Err(TreehouseError::ComposeNotAvailable);
     }
     Ok(())
 }
 
 /// Generate a docker-compose.yml for a worker from the template.
 pub fn generate_compose_file(
-    devflow_dir: &Path,
+    treehouse_dir: &Path,
     worker_name: &str,
     worktree_path: &Path,
     ports: &AllocatedPorts,
 ) -> Result<PathBuf> {
-    let (tmpl, is_custom) = template::load_or_default(devflow_dir)?;
+    let (tmpl, is_custom) = template::load_or_default(treehouse_dir)?;
 
     if is_custom {
         println!(
             "  Using custom compose template: {}",
-            devflow_dir.join("compose-template.yml").display()
+            treehouse_dir.join("compose-template.yml").display()
         );
     }
 
@@ -75,7 +75,7 @@ pub fn generate_compose_file(
         rendered
     };
 
-    let compose_dir = devflow_dir.join("compose").join(worker_name);
+    let compose_dir = treehouse_dir.join("compose").join(worker_name);
     std::fs::create_dir_all(&compose_dir)?;
 
     let compose_file = compose_dir.join("docker-compose.yml");
@@ -149,7 +149,7 @@ pub fn up(compose_file: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::ComposeOperationFailed(format!(
+        return Err(TreehouseError::ComposeOperationFailed(format!(
             "compose up failed: {stderr}"
         )));
     }
@@ -173,7 +173,7 @@ pub fn down(compose_file: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::ComposeOperationFailed(format!(
+        return Err(TreehouseError::ComposeOperationFailed(format!(
             "compose down failed: {stderr}"
         )));
     }
@@ -229,7 +229,7 @@ pub fn wait_healthy(compose_file: &Path, timeout: Duration) -> Result<()> {
 
                     // Fail fast if a container has exited or died
                     if state == "exited" || state == "dead" {
-                        return Err(DevflowError::ComposeOperationFailed(format!(
+                        return Err(TreehouseError::ComposeOperationFailed(format!(
                             "container '{name}' {state} unexpectedly"
                         )));
                     }
@@ -250,7 +250,7 @@ pub fn wait_healthy(compose_file: &Path, timeout: Duration) -> Result<()> {
         }
 
         if start.elapsed() >= timeout {
-            return Err(DevflowError::ComposeOperationFailed(format!(
+            return Err(TreehouseError::ComposeOperationFailed(format!(
                 "containers not ready after {}s",
                 timeout.as_secs()
             )));
@@ -295,7 +295,7 @@ pub fn exec_as_user(compose_file: &Path, service: &str, cmd: &str, user: Option<
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::ComposeOperationFailed(format!(
+        return Err(TreehouseError::ComposeOperationFailed(format!(
             "exec '{cmd}' failed: {stderr}"
         )));
     }
@@ -371,6 +371,6 @@ pub fn project_name(compose_file: &Path) -> String {
     compose_file
         .parent()
         .and_then(|p| p.file_name())
-        .map(|n| format!("devflow-{}", n.to_string_lossy()))
-        .unwrap_or_else(|| "devflow".to_string())
+        .map(|n| format!("treehouse-{}", n.to_string_lossy()))
+        .unwrap_or_else(|| "treehouse".to_string())
 }

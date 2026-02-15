@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 /// Check if tmux is available
 pub fn is_available() -> bool {
@@ -25,7 +25,7 @@ pub fn create_session(session_name: &str, working_dir: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to create session: {stderr}"
         )));
     }
@@ -58,7 +58,7 @@ pub fn create_window(session_name: &str, window_name: &str, working_dir: &Path) 
                 .output()?;
             if !output2.status.success() {
                 let stderr = String::from_utf8_lossy(&output2.stderr);
-                return Err(DevflowError::TmuxCommand(format!(
+                return Err(TreehouseError::TmuxCommand(format!(
                     "Failed to rename window: {stderr}"
                 )));
             }
@@ -74,7 +74,7 @@ pub fn create_window(session_name: &str, window_name: &str, working_dir: &Path) 
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to create window: {stderr}"
         )));
     }
@@ -93,7 +93,7 @@ pub fn kill_window(session_name: &str, window_name: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to kill window: {stderr}"
         )));
     }
@@ -126,7 +126,7 @@ pub fn attach_session(session_name: &str) -> Result<()> {
         .status()?;
 
     if !status.success() {
-        return Err(DevflowError::TmuxCommand(
+        return Err(TreehouseError::TmuxCommand(
             "Failed to attach to session".to_string(),
         ));
     }
@@ -142,7 +142,7 @@ pub fn send_keys(session_name: &str, window_name: &str, command: &str) -> Result
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to send keys: {stderr}"
         )));
     }
@@ -158,7 +158,7 @@ pub fn split_window(target: &str, working_dir: &Path) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to split window: {stderr}"
         )));
     }
@@ -173,7 +173,7 @@ pub fn send_keys_to_pane(target: &str, command: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to send keys to pane: {stderr}"
         )));
     }
@@ -188,7 +188,7 @@ pub fn select_pane(target: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to select pane: {stderr}"
         )));
     }
@@ -203,7 +203,7 @@ pub fn apply_window_layout(target: &str, layout: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to apply layout: {stderr}"
         )));
     }
@@ -218,7 +218,7 @@ pub fn kill_session(session_name: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to kill session: {stderr}"
         )));
     }

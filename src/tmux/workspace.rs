@@ -49,10 +49,10 @@ pub struct WorkspaceVars<'a> {
     pub compose_file: Option<&'a Path>,
 }
 
-/// Load a workspace template from `.devflow/tmux-layout.json`.
+/// Load a workspace template from `.treehouse/tmux-layout.json`.
 /// Returns `None` if the file doesn't exist.
-pub fn load_template(devflow_dir: &Path) -> Result<Option<WorkspaceTemplate>> {
-    let path = devflow_dir.join("tmux-layout.json");
+pub fn load_template(treehouse_dir: &Path) -> Result<Option<WorkspaceTemplate>> {
+    let path = treehouse_dir.join("tmux-layout.json");
     if !path.exists() {
         return Ok(None);
     }
@@ -154,7 +154,7 @@ pub fn create_worker_session(
                 .output()?;
             if !rename_output.status.success() {
                 let stderr = String::from_utf8_lossy(&rename_output.stderr);
-                return Err(crate::error::DevflowError::TmuxCommand(format!(
+                return Err(crate::error::TreehouseError::TmuxCommand(format!(
                     "Failed to rename window: {stderr}"
                 )));
             }

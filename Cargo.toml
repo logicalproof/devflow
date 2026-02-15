@@ -1,8 +1,12 @@
 [package]
-name = "devflow"
-version = "0.6.0"
+name = "treehouse"
+version = "0.7.0"
 edition = "2024"
 description = "Parallel AI-assisted development orchestrator"
+
+[[bin]]
+name = "th"
+path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
@@ -21,8 +25,12 @@ uuid = { version = "1.20", features = ["v4", "serde"] }
 sysinfo = "0.33"
 fs2 = "0.4"
 which = "8.0"
+url = "2"
 dirs = "6.0"
 tar = "0.4.44"
 futures-util = "0.3.31"
 http-body-util = "0.1.3"
 bytes = "1.11.1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -7,7 +7,7 @@ use crate::compose::ports::AllocatedPorts;
 use crate::error::Result;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct WorkerState {
+pub struct GroveState {
     pub task_name: String,
     pub branch: String,
     pub worktree_path: PathBuf,
@@ -25,7 +25,7 @@ pub struct WorkerState {
     pub tmux_session: Option<String>,
 }
 
-impl WorkerState {
+impl GroveState {
     pub fn load(path: &Path) -> Result<Self> {
         let contents = std::fs::read_to_string(path)?;
         let state: Self = serde_json::from_str(&contents)?;
@@ -41,7 +41,7 @@ impl WorkerState {
         Ok(())
     }
 
-    pub fn state_path(devflow_dir: &Path, task_name: &str) -> PathBuf {
-        devflow_dir.join("workers").join(format!("{task_name}.json"))
+    pub fn state_path(treehouse_dir: &Path, task_name: &str) -> PathBuf {
+        treehouse_dir.join("groves").join(format!("{task_name}.json"))
     }
 }

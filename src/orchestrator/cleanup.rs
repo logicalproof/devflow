@@ -4,22 +4,22 @@ use crate::compose::{manager as compose_mgr, ports};
 use crate::error::Result;
 use crate::tmux::{session, workspace};
 
-use super::state::WorkerState;
+use super::state::GroveState;
 
-/// Find orphaned workers (state file exists but tmux session is gone)
-pub fn find_orphans(devflow_dir: &Path) -> Result<Vec<WorkerState>> {
-    let workers_dir = devflow_dir.join("workers");
-    if !workers_dir.exists() {
+/// Find orphaned groves (state file exists but tmux session is gone)
+pub fn find_orphans(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
+    let groves_dir = treehouse_dir.join("groves");
+    if !groves_dir.exists() {
         return Ok(Vec::new());
     }
 
     let mut orphans = Vec::new();
-    for entry in std::fs::read_dir(&workers_dir)? {
+    for entry in std::fs::read_dir(&groves_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            if let Ok(state) = WorkerState::load(&path) {
-                // Check if the per-worker tmux session still exists
+            if let Ok(state) = GroveState::load(&path) {
+                // Check if the per-grove tmux session still exists
                 let session_alive = state
                     .tmux_session
                     .as_ref()
@@ -34,17 +34,17 @@ pub fn find_orphans(devflow_dir: &Path) -> Result<Vec<WorkerState>> {
     Ok(orphans)
 }
 
-/// Clean up an orphaned worker's resources
-pub fn cleanup_orphan(devflow_dir: &Path, repo_root: &Path, state: &WorkerState) -> Result<()> {
+/// Clean up an orphaned grove's resources
+pub fn cleanup_orphan(treehouse_dir: &Path, repo_root: &Path, state: &GroveState) -> Result<()> {
     // Tear down compose stack if present (best-effort)
     if let Some(ref cf) = state.compose_file {
         let _ = compose_mgr::down(cf);
-        let _ = ports::release(devflow_dir, &state.task_name);
-        let compose_dir = devflow_dir.join("compose").join(&state.task_name);
+        let _ = ports::release(treehouse_dir, &state.task_name);
+        let compose_dir = treehouse_dir.join("compose").join(&state.task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
-    // Tear down per-worker tmux session if present
+    // Tear down per-grove tmux session if present
     if let Some(ref ws) = state.tmux_session {
         workspace::destroy_worker_session(ws);
     }
@@ -55,11 +55,11 @@ pub fn cleanup_orphan(devflow_dir: &Path, repo_root: &Path, state: &WorkerState)
     }
 
     // Remove state file
-    let state_path = WorkerState::state_path(devflow_dir, &state.task_name);
+    let state_path = GroveState::state_path(treehouse_dir, &state.task_name);
     let _ = std::fs::remove_file(state_path);
 
     // Remove lock file
-    let lock_path = devflow_dir
+    let lock_path = treehouse_dir
         .join("locks")
         .join(format!("{}.lock", state.task_name));
     let _ = std::fs::remove_file(lock_path);

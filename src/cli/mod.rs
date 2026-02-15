@@ -1,17 +1,15 @@
 pub mod commit;
-pub mod container;
 pub mod containerize;
 pub mod detect;
+pub mod grove;
 pub mod init;
 pub mod task;
-pub mod tmux;
-pub mod worker;
-pub mod worktree;
+pub mod tree;
 
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "devflow", version, about = "Parallel AI-assisted development orchestrator")]
+#[command(name = "th", version, about = "Parallel AI-assisted development orchestrator")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Commands,
@@ -19,7 +17,7 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Initialize a new devflow project
+    /// Initialize a new treehouse project
     Init,
 
     /// Detect project type and frameworks
@@ -29,21 +27,13 @@ pub enum Commands {
     #[command(subcommand)]
     Task(task::TaskCommands),
 
-    /// Manage workers (parallel dev environments)
+    /// Containerized development environments
     #[command(subcommand)]
-    Worker(worker::WorkerCommands),
+    Grove(grove::GroveCommands),
 
-    /// Manage git worktrees
+    /// Lightweight worktrees (no containers)
     #[command(subcommand)]
-    Worktree(worktree::WorktreeCommands),
-
-    /// Manage tmux sessions
-    #[command(subcommand)]
-    Tmux(tmux::TmuxCommands),
-
-    /// Manage Docker containers
-    #[command(subcommand)]
-    Container(container::ContainerCommands),
+    Tree(tree::TreeCommands),
 
     /// Interactive container setup wizard
     Containerize,
@@ -57,10 +47,8 @@ pub async fn dispatch(cmd: Commands) -> crate::error::Result<()> {
         Commands::Init => init::run().await,
         Commands::Detect => detect::run().await,
         Commands::Task(cmd) => task::run(cmd).await,
-        Commands::Worker(cmd) => worker::run(cmd).await,
-        Commands::Worktree(cmd) => worktree::run(cmd).await,
-        Commands::Tmux(cmd) => tmux::run(cmd).await,
-        Commands::Container(cmd) => container::run(cmd).await,
+        Commands::Grove(cmd) => grove::run(cmd).await,
+        Commands::Tree(cmd) => tree::run(cmd).await,
         Commands::Containerize => containerize::run().await,
         Commands::Commit => commit::run().await,
     }

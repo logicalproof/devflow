@@ -5,7 +5,7 @@ use dialoguer::{Confirm, Select};
 
 use crate::config::project::ProjectConfig;
 use crate::container::templates;
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 use crate::git::repo::GitRepo;
 
 fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result<String> {
@@ -16,7 +16,7 @@ fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result
         .items(&options)
         .default(0)
         .interact()
-        .map_err(|e| DevflowError::Other(format!("Selection cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Selection cancelled: {e}")))?;
 
     let dockerfile_content = match selection {
         0 => templates::rails_template().to_string(),
@@ -36,10 +36,10 @@ fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result
         .with_prompt("Write Dockerfile to project?")
         .default(true)
         .interact()
-        .map_err(|e| DevflowError::Other(format!("Confirm cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Confirm cancelled: {e}")))?;
 
     if !proceed {
-        return Err(DevflowError::Other("Cancelled.".to_string()));
+        return Err(TreehouseError::Other("Cancelled.".to_string()));
     }
 
     std::fs::write(dockerfile_path, &dockerfile_content)?;
@@ -51,7 +51,7 @@ fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result
     );
     println!(
         "Build with: {}",
-        style("devflow container build <name>").cyan()
+        style("th grove build <name>").cyan()
     );
 
     let _ = repo_root; // available for future use
@@ -60,13 +60,13 @@ fn select_and_write_template(repo_root: &Path, dockerfile_path: &Path) -> Result
 
 pub async fn run() -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = git.devflow_dir();
+    let treehouse_dir = git.treehouse_dir();
 
-    if !devflow_dir.join("config.yml").exists() {
-        return Err(DevflowError::NotInitialized);
+    if !treehouse_dir.join("config.yml").exists() {
+        return Err(TreehouseError::NotInitialized);
     }
 
-    let config = ProjectConfig::load(&devflow_dir.join("config.yml"))?;
+    let config = ProjectConfig::load(&treehouse_dir.join("config.yml"))?;
 
     println!("{}", style("Container Setup Wizard").bold());
     println!();
@@ -114,7 +114,7 @@ pub async fn run() -> Result<()> {
             .items(&use_options)
             .default(0)
             .interact()
-            .map_err(|e| DevflowError::Other(format!("Selection cancelled: {e}")))?;
+            .map_err(|e| TreehouseError::Other(format!("Selection cancelled: {e}")))?;
 
         if selection < existing_dockerfiles.len() {
             // Copy existing Dockerfile to Dockerfile.devflow if it isn't already
@@ -149,18 +149,18 @@ pub async fn run() -> Result<()> {
     // Update config
     let mut config = config;
     config.container_enabled = true;
-    config.save(&devflow_dir.join("config.yml"))?;
+    config.save(&treehouse_dir.join("config.yml"))?;
 
     // Offer to generate compose template for per-worker stacks
     let generate_compose = Confirm::new()
         .with_prompt("Generate Docker Compose template for per-worker stacks?")
         .default(true)
         .interact()
-        .map_err(|e| DevflowError::Other(format!("Confirm cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Confirm cancelled: {e}")))?;
 
     if generate_compose {
         let template_content = crate::compose::template::default_rails_template();
-        let template_path = devflow_dir.join("compose-template.yml");
+        let template_path = treehouse_dir.join("compose-template.yml");
         std::fs::write(&template_path, template_content)?;
 
         println!(
@@ -170,7 +170,7 @@ pub async fn run() -> Result<()> {
         );
         println!(
             "Use with: {}",
-            style("devflow worker spawn <task> --compose").cyan()
+            style("th grove plant <task>").cyan()
         );
     }
 

@@ -269,33 +269,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
-name = "devflow"
-version = "0.6.0"
-dependencies = [
- "bollard",
- "bytes",
- "chrono",
- "clap",
- "console",
- "dialoguer",
- "dirs",
- "fs2",
- "futures-util",
- "git2",
- "http-body-util",
- "indicatif",
- "serde",
- "serde_json",
- "serde_yml",
- "sysinfo",
- "tar",
- "thiserror",
- "tokio",
- "uuid",
- "which",
-]
-
-[[package]]
 name = "dialoguer"
 version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1501,6 +1474,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "db97caf9d906fbde555dd62fa95ddba9eecfd14cb388e4f491a66d74cd5fb79a"
 dependencies = [
  "once_cell",
+]
+
+[[package]]
+name = "treehouse"
+version = "0.7.0"
+dependencies = [
+ "bollard",
+ "bytes",
+ "chrono",
+ "clap",
+ "console",
+ "dialoguer",
+ "dirs",
+ "fs2",
+ "futures-util",
+ "git2",
+ "http-body-util",
+ "indicatif",
+ "serde",
+ "serde_json",
+ "serde_yml",
+ "sysinfo",
+ "tar",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+ "which",
 ]
 
 [[package]]

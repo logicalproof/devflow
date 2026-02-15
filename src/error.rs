@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 #[derive(Error, Debug)]
-pub enum DevflowError {
+pub enum TreehouseError {
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
@@ -17,7 +17,7 @@ pub enum DevflowError {
     #[error("Docker error: {0}")]
     Docker(#[from] bollard::errors::Error),
 
-    #[error("Not a devflow project. Run 'devflow init' first.")]
+    #[error("Not a treehouse project. Run 'th init' first.")]
     NotInitialized,
 
     #[error("Not a git repository")]
@@ -38,11 +38,11 @@ pub enum DevflowError {
     #[error("Invalid task state transition: {current} -> {target}")]
     InvalidTaskState { current: String, target: String },
 
-    #[error("Worker already exists for task: {0}")]
-    WorkerAlreadyExists(String),
+    #[error("Grove already exists for task: {0}")]
+    GroveAlreadyExists(String),
 
-    #[error("Worker not found: {0}")]
-    WorkerNotFound(String),
+    #[error("Grove not found: {0}")]
+    GroveNotFound(String),
 
     #[error("Worktree already exists: {0}")]
     WorktreeAlreadyExists(String),
@@ -81,4 +81,4 @@ pub enum DevflowError {
     Other(String),
 }
 
-pub type Result<T> = std::result::Result<T, DevflowError>;
+pub type Result<T> = std::result::Result<T, TreehouseError>;

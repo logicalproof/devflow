@@ -1,7 +1,7 @@
 use console::style;
 use dialoguer::{Input, Select};
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 const COMMIT_TYPES: &[(&str, &str)] = &[
     ("feat", "A new feature"),
@@ -44,7 +44,7 @@ pub async fn run() -> Result<()> {
         .items(&type_labels)
         .default(0)
         .interact()
-        .map_err(|e| DevflowError::Other(format!("Selection cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Selection cancelled: {e}")))?;
 
     let commit_type = COMMIT_TYPES[type_idx].0;
 
@@ -53,13 +53,13 @@ pub async fn run() -> Result<()> {
         .with_prompt("Scope (optional, press Enter to skip)")
         .allow_empty(true)
         .interact_text()
-        .map_err(|e| DevflowError::Other(format!("Input cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Input cancelled: {e}")))?;
 
     // Commit message
     let message: String = Input::new()
         .with_prompt("Short description")
         .interact_text()
-        .map_err(|e| DevflowError::Other(format!("Input cancelled: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Input cancelled: {e}")))?;
 
     // Build the commit message
     let full_message = if scope.is_empty() {
@@ -78,7 +78,7 @@ pub async fn run() -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::GitCommand(format!(
+        return Err(TreehouseError::GitCommand(format!(
             "Commit failed: {stderr}"
         )));
     }

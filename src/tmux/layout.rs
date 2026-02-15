@@ -1,6 +1,6 @@
 use std::process::Command;
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 pub const VALID_LAYOUTS: &[&str] = &[
     "tiled",
@@ -12,7 +12,7 @@ pub const VALID_LAYOUTS: &[&str] = &[
 
 pub fn apply_layout(session_name: &str, layout: &str) -> Result<()> {
     if !VALID_LAYOUTS.contains(&layout) {
-        return Err(DevflowError::Other(format!(
+        return Err(TreehouseError::Other(format!(
             "Invalid layout: {layout}. Valid layouts: {}",
             VALID_LAYOUTS.join(", ")
         )));
@@ -24,7 +24,7 @@ pub fn apply_layout(session_name: &str, layout: &str) -> Result<()> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(DevflowError::TmuxCommand(format!(
+        return Err(TreehouseError::TmuxCommand(format!(
             "Failed to apply layout: {stderr}"
         )));
     }

@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 
 use fs2::FileExt;
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 pub struct FileLock {
     _file: File,
@@ -19,7 +19,7 @@ impl FileLock {
 
         let file = File::create(path)?;
         file.try_lock_exclusive().map_err(|e| {
-            DevflowError::LockFailed(format!("Could not acquire lock on {}: {e}", path.display()))
+            TreehouseError::LockFailed(format!("Could not acquire lock on {}: {e}", path.display()))
         })?;
 
         Ok(Self {

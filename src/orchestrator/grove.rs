@@ -8,17 +8,17 @@ use crate::cli::task as cli_task;
 use crate::compose::{db as compose_db, manager as compose_mgr, ports};
 use crate::config::lock::FileLock;
 use crate::config::project::ProjectConfig;
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 use crate::git::{branch, repo::GitRepo, worktree};
 use crate::tmux::{session, workspace};
 
-use super::state::WorkerState;
+use super::state::GroveState;
 
-/// Spawn a new worker: create branch, worktree, optionally start compose stack,
-/// create tmux window, save state.
-pub fn spawn(
+/// Plant a new grove/tree: create branch, worktree, optionally start compose stack,
+/// create tmux workspace, save state.
+pub fn plant(
     git: &GitRepo,
-    devflow_dir: &Path,
+    treehouse_dir: &Path,
     task_name: &str,
     branch_name: &str,
     tmux_session: &str,
@@ -29,15 +29,15 @@ pub fn spawn(
     compose_post_start: &[String],
     db_clone: bool,
     db_source: Option<&str>,
-) -> Result<WorkerState> {
+) -> Result<GroveState> {
     // 1. Acquire lock
-    let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
     let _lock = FileLock::acquire(&lock_path)?;
 
-    // 2. Check for duplicate worker
-    let state_path = WorkerState::state_path(devflow_dir, task_name);
+    // 2. Check for duplicate
+    let state_path = GroveState::state_path(treehouse_dir, task_name);
     if state_path.exists() {
-        return Err(DevflowError::WorkerAlreadyExists(task_name.to_string()));
+        return Err(TreehouseError::GroveAlreadyExists(task_name.to_string()));
     }
 
     // 3. Check disk space
@@ -52,7 +52,7 @@ pub fn spawn(
     };
 
     // 5. Create worktree (or reuse existing one from a previous `stop`)
-    let worktree_path = devflow_dir.join("worktrees").join(task_name);
+    let worktree_path = treehouse_dir.join("worktrees").join(task_name);
     let reusing_worktree = worktree::worktree_exists(&worktree_path);
 
     if reusing_worktree {
@@ -65,13 +65,10 @@ pub fn spawn(
     }
 
     // 5½. Copy essential files into worktree from repo root.
-    // Always overwrite: the repo root may have edits not yet committed to the branch,
-    // and the worktree's git checkout would have a stale version.
     for filename in &["Dockerfile.dev", "Dockerfile.devflow", ".env", "config/master.key"] {
         let repo_file = git.root.join(filename);
         let worktree_file = worktree_path.join(filename);
         if repo_file.exists() {
-            // Ensure parent directory exists (for nested paths like config/master.key)
             if let Some(parent) = worktree_file.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
@@ -110,7 +107,7 @@ pub fn spawn(
         }
 
         // 5b. Allocate ports
-        let allocated = match ports::allocate(devflow_dir, task_name) {
+        let allocated = match ports::allocate(treehouse_dir, task_name) {
             Ok(p) => p,
             Err(e) => {
                 if !reusing_worktree {
@@ -125,7 +122,7 @@ pub fn spawn(
 
         // 5b½. Check ports are actually available on the host
         if let Err(e) = ports::check_ports_available(&allocated) {
-            let _ = ports::release(devflow_dir, task_name);
+            let _ = ports::release(treehouse_dir, task_name);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
             }
@@ -137,14 +134,14 @@ pub fn spawn(
 
         // 5c. Generate compose file
         let cf = match compose_mgr::generate_compose_file(
-            devflow_dir,
+            treehouse_dir,
             task_name,
             &worktree_path,
             &allocated,
         ) {
             Ok(cf) => cf,
             Err(e) => {
-                let _ = ports::release(devflow_dir, task_name);
+                let _ = ports::release(treehouse_dir, task_name);
                 if !reusing_worktree {
                     let _ = worktree::remove_worktree(&git.root, &worktree_path);
                 }
@@ -157,8 +154,8 @@ pub fn spawn(
 
         // 5d. Start compose stack
         if let Err(e) = compose_mgr::up(&cf) {
-            let _ = ports::release(devflow_dir, task_name);
-            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = ports::release(treehouse_dir, task_name);
+            let compose_dir = treehouse_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
@@ -175,8 +172,8 @@ pub fn spawn(
             Duration::from_secs(compose_health_timeout_secs),
         ) {
             let _ = compose_mgr::down(&cf);
-            let _ = ports::release(devflow_dir, task_name);
-            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = ports::release(treehouse_dir, task_name);
+            let compose_dir = treehouse_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
             if !reusing_worktree {
                 let _ = worktree::remove_worktree(&git.root, &worktree_path);
@@ -189,7 +186,6 @@ pub fn spawn(
 
         // 5e¾. Database setup (non-fatal: warn on failure, don't tear down)
         if db_clone {
-            // Resolve source: explicit flag > config > auto-detect from worktree
             let source = if let Some(src) = db_source {
                 src.to_string()
             } else {
@@ -209,8 +205,8 @@ pub fn spawn(
             if !source.is_empty() {
                 if let Err(e) = compose_db::clone_database(&cf, &source, task_name) {
                     eprintln!("Warning: database clone failed: {e}");
-                    eprintln!("  The worker is running but the database may be empty.");
-                    eprintln!("  You can retry with: devflow worker db-clone {task_name}");
+                    eprintln!("  The grove is running but the database may be empty.");
+                    eprintln!("  You can retry with: th grove transplant {task_name}");
                 }
             }
         } else {
@@ -232,14 +228,14 @@ pub fn spawn(
 
     // 5g. Generate CLAUDE.local.md in worktree (non-fatal)
     {
-        let config_path = devflow_dir.join("config.yml");
+        let config_path = treehouse_dir.join("config.yml");
         let project_name = ProjectConfig::load(&config_path)
             .map(|c| c.project_name)
             .unwrap_or_default();
         let detected_types = ProjectConfig::load(&config_path)
             .map(|c| c.detected_types.join(", "))
             .unwrap_or_default();
-        let task_type = cli_task::load_tasks(devflow_dir)
+        let task_type = cli_task::load_tasks(treehouse_dir)
             .ok()
             .and_then(|tasks| {
                 tasks
@@ -273,14 +269,14 @@ pub fn spawn(
             redis_port: compose_ports.as_ref().map(|p| p.redis).unwrap_or(6379),
         };
 
-        match claude_md::generate(&worktree_path, devflow_dir, &vars) {
+        match claude_md::generate(&worktree_path, treehouse_dir, &vars) {
             Ok(()) => println!("Generated CLAUDE.local.md in worktree"),
             Err(e) => eprintln!("Warning: failed to generate CLAUDE.local.md: {e}"),
         }
     }
 
-    // 6. Create per-worker tmux workspace session
-    let ws_template = workspace::load_template(devflow_dir)?
+    // 6. Create per-grove tmux workspace session
+    let ws_template = workspace::load_template(treehouse_dir)?
         .unwrap_or_else(workspace::default_template);
 
     let vars = workspace::WorkspaceVars {
@@ -298,8 +294,8 @@ pub fn spawn(
         workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = compose_file {
             let _ = compose_mgr::down(cf);
-            let _ = ports::release(devflow_dir, task_name);
-            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = ports::release(treehouse_dir, task_name);
+            let compose_dir = treehouse_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
         if !reusing_worktree {
@@ -321,8 +317,8 @@ pub fn spawn(
         }
     }
 
-    // 8. Save worker state
-    let state = WorkerState {
+    // 8. Save state
+    let state = GroveState {
         task_name: task_name.to_string(),
         branch: branch_name.to_string(),
         worktree_path: worktree_path.clone(),
@@ -339,8 +335,8 @@ pub fn spawn(
         workspace::destroy_worker_session(&ws_name);
         if let Some(ref cf) = state.compose_file {
             let _ = compose_mgr::down(cf);
-            let _ = ports::release(devflow_dir, task_name);
-            let compose_dir = devflow_dir.join("compose").join(task_name);
+            let _ = ports::release(treehouse_dir, task_name);
+            let compose_dir = treehouse_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
         if !reusing_worktree {
@@ -355,26 +351,26 @@ pub fn spawn(
     Ok(state)
 }
 
-/// Stop a worker: tear down ephemeral resources (compose, tmux, state) but keep worktree + branch.
-pub fn stop(devflow_dir: &Path, task_name: &str) -> Result<()> {
-    let state_path = WorkerState::state_path(devflow_dir, task_name);
+/// Stop a grove/tree: tear down ephemeral resources (compose, tmux, state) but keep worktree + branch.
+pub fn stop(treehouse_dir: &Path, task_name: &str) -> Result<()> {
+    let state_path = GroveState::state_path(treehouse_dir, task_name);
     if !state_path.exists() {
-        return Err(DevflowError::WorkerNotFound(task_name.to_string()));
+        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
     }
 
-    let state = WorkerState::load(&state_path)?;
+    let state = GroveState::load(&state_path)?;
 
     // Tear down compose stack if present
     if let Some(ref cf) = state.compose_file {
         if let Err(e) = compose_mgr::down(cf) {
             eprintln!("Warning: compose down failed: {e}");
         }
-        let _ = ports::release(devflow_dir, task_name);
-        let compose_dir = devflow_dir.join("compose").join(task_name);
+        let _ = ports::release(treehouse_dir, task_name);
+        let compose_dir = treehouse_dir.join("compose").join(task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
-    // Kill per-worker tmux session
+    // Kill per-grove tmux session
     if let Some(ref ws) = state.tmux_session {
         workspace::destroy_worker_session(ws);
     }
@@ -383,22 +379,24 @@ pub fn stop(devflow_dir: &Path, task_name: &str) -> Result<()> {
     std::fs::remove_file(&state_path)?;
 
     // Remove lock file if it exists
-    let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
     let _ = std::fs::remove_file(lock_path);
 
     Ok(())
 }
 
-/// Kill a worker: tear down compose stack, remove tmux session, worktree, branch, and state file.
+/// Uproot a grove/tree: tear down compose stack, remove tmux session, worktree, branch, and state file.
 /// If the worktree has uncommitted changes or unpushed commits and `force` is false,
-/// returns an error suggesting `stop` or `kill --force`.
-pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, force: bool) -> Result<()> {
-    let state_path = WorkerState::state_path(devflow_dir, task_name);
+/// returns an error suggesting `stop` or `uproot --force`.
+pub fn uproot(git: &GitRepo, treehouse_dir: &Path, task_name: &str, force: bool) -> Result<()> {
+    let state_path = GroveState::state_path(treehouse_dir, task_name);
     if !state_path.exists() {
-        return Err(DevflowError::WorkerNotFound(task_name.to_string()));
+        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
     }
 
-    let state = WorkerState::load(&state_path)?;
+    let state = GroveState::load(&state_path)?;
+
+    let kind = if state.compose_file.is_some() { "grove" } else { "tree" };
 
     // Check for dirty worktree before destroying
     if !force && state.worktree_path.exists() {
@@ -413,10 +411,10 @@ pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, force: bool) -> 
             if ahead > 0 {
                 reasons.push(format!("{ahead} unpushed commit(s)"));
             }
-            return Err(DevflowError::Other(format!(
-                "Worker '{}' has {}.\n\
-                 Use 'devflow worker stop {0}' to tear down containers/tmux but keep your work.\n\
-                 Use 'devflow worker kill {0} --force' to destroy everything.",
+            return Err(TreehouseError::Other(format!(
+                "{kind} '{}' has {}.\n\
+                 Use 'th {kind} stop {0}' to stop but keep your work.\n\
+                 Use 'th {kind} uproot {0} --force' to destroy everything.",
                 task_name,
                 reasons.join(" and "),
             )));
@@ -428,12 +426,12 @@ pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, force: bool) -> 
         if let Err(e) = compose_mgr::down(cf) {
             eprintln!("Warning: compose down failed: {e}");
         }
-        let _ = ports::release(devflow_dir, task_name);
-        let compose_dir = devflow_dir.join("compose").join(task_name);
+        let _ = ports::release(treehouse_dir, task_name);
+        let compose_dir = treehouse_dir.join("compose").join(task_name);
         let _ = std::fs::remove_dir_all(compose_dir);
     }
 
-    // Kill per-worker tmux session
+    // Kill per-grove tmux session
     if let Some(ref ws) = state.tmux_session {
         workspace::destroy_worker_session(ws);
     }
@@ -450,31 +448,40 @@ pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, force: bool) -> 
     std::fs::remove_file(&state_path)?;
 
     // Remove lock file if it exists
-    let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
+    let lock_path = treehouse_dir.join("locks").join(format!("{task_name}.lock"));
     let _ = std::fs::remove_file(lock_path);
 
     Ok(())
 }
 
-/// List all workers from state files
-pub fn list_workers(devflow_dir: &Path) -> Result<Vec<WorkerState>> {
-    let workers_dir = devflow_dir.join("workers");
-    if !workers_dir.exists() {
+/// List all groves from state files
+pub fn list_groves(treehouse_dir: &Path) -> Result<Vec<GroveState>> {
+    let groves_dir = treehouse_dir.join("groves");
+    if !groves_dir.exists() {
         return Ok(Vec::new());
     }
 
-    let mut workers = Vec::new();
-    for entry in std::fs::read_dir(&workers_dir)? {
+    let mut groves = Vec::new();
+    for entry in std::fs::read_dir(&groves_dir)? {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "json") {
-            if let Ok(state) = WorkerState::load(&path) {
-                workers.push(state);
+            if let Ok(state) = GroveState::load(&path) {
+                groves.push(state);
             }
         }
     }
 
-    Ok(workers)
+    Ok(groves)
+}
+
+/// Get a grove by name
+pub fn get_grove_by_name(treehouse_dir: &Path, task_name: &str) -> Result<GroveState> {
+    let state_path = GroveState::state_path(treehouse_dir, task_name);
+    if !state_path.exists() {
+        return Err(TreehouseError::GroveNotFound(task_name.to_string()));
+    }
+    GroveState::load(&state_path)
 }
 
 fn check_disk_space(min_mb: u64) -> Result<()> {
@@ -483,7 +490,7 @@ fn check_disk_space(min_mb: u64) -> Result<()> {
         if disk.mount_point() == Path::new("/") {
             let available_mb = disk.available_space() / (1024 * 1024);
             if available_mb < min_mb {
-                return Err(DevflowError::InsufficientDiskSpace {
+                return Err(TreehouseError::InsufficientDiskSpace {
                     available_mb,
                     required_mb: min_mb,
                 });

@@ -30,20 +30,20 @@ fn ensure_gitignore_entry(repo_root: &std::path::Path, entry: &str) {
 
 pub async fn run() -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = git.devflow_dir();
+    let treehouse_dir = git.treehouse_dir();
 
-    if devflow_dir.join("config.yml").exists() {
+    if treehouse_dir.join("config.yml").exists() {
         println!(
             "{} Already initialized. Config at {}",
             style("!").yellow().bold(),
-            devflow_dir.join("config.yml").display()
+            treehouse_dir.join("config.yml").display()
         );
         return Ok(());
     }
 
     // Create directory structure
-    for dir in &["worktrees", "workers", "locks", "tasks", "compose"] {
-        fs::create_dir_all(devflow_dir.join(dir))?;
+    for dir in &["worktrees", "groves", "locks", "tasks", "compose"] {
+        fs::create_dir_all(treehouse_dir.join(dir))?;
     }
 
     // Detect project types
@@ -80,35 +80,35 @@ pub async fn run() -> Result<()> {
         container_enabled: false,
         default_branch,
     };
-    project_config.save(&devflow_dir.join("config.yml"))?;
+    project_config.save(&treehouse_dir.join("config.yml"))?;
 
     // Write local config
     let local_config = LocalConfig::with_defaults();
-    local_config.save(&devflow_dir.join("local.yml"))?;
+    local_config.save(&treehouse_dir.join("local.yml"))?;
 
     // Create empty tasks file
-    fs::write(devflow_dir.join("tasks.json"), "[]")?;
+    fs::write(treehouse_dir.join("tasks.json"), "[]")?;
 
     // Ensure .env is in .gitignore to prevent secrets from being committed
     ensure_gitignore_entry(&git.root, ".env");
-    ensure_gitignore_entry(&git.root, ".devflow/worktrees/");
-    ensure_gitignore_entry(&git.root, ".devflow/workers/");
-    ensure_gitignore_entry(&git.root, ".devflow/compose/");
-    ensure_gitignore_entry(&git.root, ".devflow/locks/");
-    ensure_gitignore_entry(&git.root, ".devflow/tasks/");
-    ensure_gitignore_entry(&git.root, ".devflow/local.yml");
-    ensure_gitignore_entry(&git.root, ".devflow/ports.json");
-    ensure_gitignore_entry(&git.root, ".devflow/ports.json.lock");
-    ensure_gitignore_entry(&git.root, ".devflow/tasks.json");
+    ensure_gitignore_entry(&git.root, ".treehouse/worktrees/");
+    ensure_gitignore_entry(&git.root, ".treehouse/groves/");
+    ensure_gitignore_entry(&git.root, ".treehouse/compose/");
+    ensure_gitignore_entry(&git.root, ".treehouse/locks/");
+    ensure_gitignore_entry(&git.root, ".treehouse/tasks/");
+    ensure_gitignore_entry(&git.root, ".treehouse/local.yml");
+    ensure_gitignore_entry(&git.root, ".treehouse/ports.json");
+    ensure_gitignore_entry(&git.root, ".treehouse/ports.json.lock");
+    ensure_gitignore_entry(&git.root, ".treehouse/tasks.json");
 
     println!(
-        "{} Initialized devflow for project '{}'",
+        "{} Initialized treehouse for project '{}'",
         style("✓").green().bold(),
         project_name
     );
     println!(
         "  Config: {}",
-        devflow_dir.join("config.yml").display()
+        treehouse_dir.join("config.yml").display()
     );
 
     Ok(())

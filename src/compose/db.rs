@@ -1,15 +1,16 @@
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 
 use super::manager as compose_mgr;
 
 /// Check that `pg_dump` is available on the host PATH.
 pub fn check_pg_dump_available() -> Result<()> {
     if which::which("pg_dump").is_err() {
-        return Err(DevflowError::Other(
+        return Err(TreehouseError::Other(
             "pg_dump not found on PATH. Install PostgreSQL client tools:\n  \
              macOS:  brew install libpq && brew link --force libpq\n  \
              Ubuntu: sudo apt-get install postgresql-client\n  \
@@ -20,130 +21,218 @@ pub fn check_pg_dump_available() -> Result<()> {
     Ok(())
 }
 
-/// Detect the development database URL from the worktree's config/database.yml.
+/// Detect the development database URL from the worktree, using a priority chain:
 ///
-/// Parses the YAML looking for the `development:` section and extracts the
-/// `database:` value. Handles ERB `<%= ... || "fallback" %>` patterns by
-/// extracting the fallback string. Returns a postgres:// URL.
+/// 1. `DATABASE_URL` from `.env` file
+/// 2. `database` key from `config/database.yml` (parsed with serde_yml after ERB stripping)
+/// 3. Query running Postgres for a matching `{project}_development` database
+/// 4. Convention fallback: `{repo_name}_development`
 pub fn detect_source_db(worktree_path: &Path) -> Result<String> {
-    let db_yml = worktree_path.join("config/database.yml");
-    if !db_yml.exists() {
-        return Err(DevflowError::Other(format!(
-            "No config/database.yml found at {}",
-            worktree_path.display()
-        )));
+    if let Some(url) = detect_from_env_file(worktree_path) {
+        println!("  Detected database from .env: {url}");
+        return Ok(url);
     }
-
-    let contents = std::fs::read_to_string(&db_yml)?;
-    let mut in_development = false;
-    let mut indent_level = None;
-
-    for line in contents.lines() {
-        let trimmed = line.trim();
-
-        // Track top-level sections
-        if !line.starts_with(' ') && !line.starts_with('\t') && trimmed.ends_with(':') {
-            in_development = trimmed == "development:";
-            indent_level = None;
-            continue;
-        }
-
-        if !in_development {
-            continue;
-        }
-
-        // Check for nested section start (e.g. "  <<: *default")
-        if trimmed.starts_with("database:") || trimmed.starts_with("database :") {
-            let leading_spaces = line.len() - line.trim_start().len();
-            if let Some(level) = indent_level {
-                if leading_spaces < level {
-                    // We've left the development section
-                    break;
-                }
-            } else {
-                indent_level = Some(leading_spaces);
-            }
-
-            // Extract the value after "database:"
-            let value = trimmed
-                .split_once(':')
-                .map(|(_, v)| v.trim())
-                .unwrap_or("");
-
-            let db_name = extract_db_name(value);
-            if !db_name.is_empty() {
-                return Ok(format!("postgres://localhost:5432/{db_name}"));
-            }
-        }
-
-        // Track indent level from first key in development section
-        if indent_level.is_none() && !trimmed.is_empty() && !trimmed.starts_with('#') {
-            let leading_spaces = line.len() - line.trim_start().len();
-            indent_level = Some(leading_spaces);
-        }
+    if let Some(url) = detect_from_database_yml(worktree_path) {
+        println!("  Detected database from config/database.yml: {url}");
+        return Ok(url);
     }
-
-    // Fallback: use directory name heuristic
-    let dir_name = worktree_path
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_default();
-
-    if dir_name.is_empty() {
-        return Err(DevflowError::Other(
-            "Could not detect database name from config/database.yml".to_string(),
-        ));
+    if let Some(url) = detect_from_running_postgres(worktree_path) {
+        println!("  Detected database from running Postgres: {url}");
+        return Ok(url);
     }
-
-    // Workers have names like "task-name", parent repo might be "Reportal"
-    // Walk up to find the original repo name
-    let repo_root = worktree_path.join(".git");
-    let db_name = if repo_root.is_file() {
-        // This is a worktree — read the gitdir link to find the parent repo name
-        std::fs::read_to_string(&repo_root)
-            .ok()
-            .and_then(|content| {
-                // Format: "gitdir: /path/to/repo/.git/worktrees/task-name"
-                content.split('/').rev().nth(3).map(|s| s.to_string())
-            })
-            .unwrap_or(dir_name)
-    } else {
-        dir_name
-    };
-
-    Ok(format!(
-        "postgres://localhost:5432/{}_development",
-        db_name.replace('-', "_")
+    if let Some(url) = detect_from_convention(worktree_path) {
+        println!("  Detected database from naming convention: {url}");
+        return Ok(url);
+    }
+    Err(TreehouseError::Other(
+        "Could not detect source database".into(),
     ))
 }
 
-/// Extract a database name from a YAML value, handling ERB templates.
-fn extract_db_name(value: &str) -> String {
-    if value.contains("<%=") {
-        // ERB template like: <%= ENV['DB_NAME'] || "Reportal_development" %>
-        // Look for the fallback value after `||`
-        let search_region = if let Some(idx) = value.find("||") {
-            &value[idx..]
-        } else {
-            // No fallback operator — no static name to extract
-            return String::new();
-        };
+/// Priority 1: Read `DATABASE_URL` from the `.env` file.
+fn detect_from_env_file(worktree_path: &Path) -> Option<String> {
+    let env_file = worktree_path.join(".env");
+    let contents = std::fs::read_to_string(env_file).ok()?;
 
-        // Extract a double-quoted string
-        if let Some(start) = search_region.find('"') {
-            if let Some(end) = search_region[start + 1..].find('"') {
-                return search_region[start + 1..start + 1 + end].to_string();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        // Strip optional `export ` prefix
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        if let Some(value) = line.strip_prefix("DATABASE_URL=") {
+            let value = value.trim();
+            // Strip surrounding quotes
+            let value = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| {
+                    value
+                        .strip_prefix('\'')
+                        .and_then(|v| v.strip_suffix('\''))
+                })
+                .unwrap_or(value);
+            if !value.is_empty() {
+                return Some(value.to_string());
             }
         }
-        // Extract a single-quoted string
-        if let Some(start) = search_region.find('\'') {
-            if let Some(end) = search_region[start + 1..].find('\'') {
-                return search_region[start + 1..start + 1 + end].to_string();
+    }
+    None
+}
+
+/// Priority 2: Parse `config/database.yml` with serde_yml after stripping ERB tags.
+fn detect_from_database_yml(worktree_path: &Path) -> Option<String> {
+    let db_yml = worktree_path.join("config/database.yml");
+    let contents = std::fs::read_to_string(db_yml).ok()?;
+    let cleaned = strip_erb(&contents);
+
+    // Parse the cleaned YAML
+    let doc: HashMap<String, serde_yml::Value> = serde_yml::from_str(&cleaned).ok()?;
+
+    // Look up development.database
+    let dev_section = doc.get("development")?;
+    let db_name = dev_section.get("database")?.as_str()?;
+
+    if db_name.is_empty() {
+        return None;
+    }
+
+    Some(format!("postgres://localhost:5432/{db_name}"))
+}
+
+/// Strip ERB `<%= ... %>` tags from YAML content, extracting fallback values where possible.
+///
+/// - `<%= ENV['X'] || "fallback" %>` → `fallback`
+/// - `<%= ENV['X'] || 'fallback' %>` → `fallback`
+/// - `<%= ENV['X'] %>` (no fallback)  → empty string
+fn strip_erb(content: &str) -> String {
+    let mut result = String::with_capacity(content.len());
+    let mut rest = content;
+
+    while let Some(start) = rest.find("<%=") {
+        result.push_str(&rest[..start]);
+        if let Some(end) = rest[start..].find("%>") {
+            let erb_body = &rest[start + 3..start + end];
+            let replacement = extract_erb_fallback(erb_body);
+            result.push_str(&replacement);
+            rest = &rest[start + end + 2..];
+        } else {
+            // Malformed ERB — keep the rest as-is
+            result.push_str(&rest[start..]);
+            rest = "";
+        }
+    }
+    result.push_str(rest);
+    result
+}
+
+/// Extract the fallback value from an ERB expression body.
+///
+/// Given the body of `<%= ... %>`, looks for `|| "value"` or `|| 'value'` patterns.
+fn extract_erb_fallback(erb_body: &str) -> String {
+    if let Some(idx) = erb_body.find("||") {
+        let after_pipe = &erb_body[idx + 2..];
+        // Try double quotes
+        if let Some(start) = after_pipe.find('"') {
+            if let Some(end) = after_pipe[start + 1..].find('"') {
+                return after_pipe[start + 1..start + 1 + end].to_string();
             }
         }
-        String::new()
+        // Try single quotes
+        if let Some(start) = after_pipe.find('\'') {
+            if let Some(end) = after_pipe[start + 1..].find('\'') {
+                return after_pipe[start + 1..start + 1 + end].to_string();
+            }
+        }
+    }
+    // No fallback — return empty string so the YAML key gets an empty value
+    String::new()
+}
+
+/// Priority 3: Query a running Postgres instance for a matching database.
+fn detect_from_running_postgres(worktree_path: &Path) -> Option<String> {
+    // psql must be on PATH
+    which::which("psql").ok()?;
+
+    let project_name = project_name_from_path(worktree_path)?;
+    let expected = format!("{}_development", project_name.replace('-', "_"));
+
+    // List databases: -l (list), -t (tuples only), -A (unaligned), -F, (comma separator)
+    let output = Command::new("psql")
+        .args(["-h", "localhost", "-p", "5432", "-l", "-t", "-A", "-F", ","])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Each line: dbname,owner,encoding,...
+    for line in stdout.lines() {
+        let db_name = line.split(',').next().unwrap_or("").trim();
+        if db_name.eq_ignore_ascii_case(&expected) {
+            return Some(format!("postgres://localhost:5432/{db_name}"));
+        }
+    }
+    None
+}
+
+/// Priority 4: Convention fallback based on repo/project directory name.
+fn detect_from_convention(worktree_path: &Path) -> Option<String> {
+    let project_name = project_name_from_path(worktree_path)?;
+    Some(format!(
+        "postgres://localhost:5432/{}_development",
+        project_name.replace('-', "_")
+    ))
+}
+
+/// Determine the project/repo name from a worktree path.
+///
+/// - If `.git` is a file (git worktree): reads `gitdir:` to find the parent repo name.
+/// - If `.git` is a directory (normal repo): uses the directory name.
+fn project_name_from_path(worktree_path: &Path) -> Option<String> {
+    let dot_git = worktree_path.join(".git");
+
+    if dot_git.is_file() {
+        // Git worktree — .git file contains: "gitdir: /path/to/repo/.git/worktrees/name"
+        let content = std::fs::read_to_string(&dot_git).ok()?;
+        let gitdir_line = content.lines().find(|l| l.starts_with("gitdir:"))?;
+        let gitdir_path = gitdir_line.strip_prefix("gitdir:")?.trim();
+        let gitdir = Path::new(gitdir_path);
+
+        // Walk up from .git/worktrees/name → .git → repo_root
+        let repo_root = gitdir.parent()?.parent()?.parent()?;
+        let name = repo_root.file_name()?.to_string_lossy().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    } else if dot_git.is_dir() {
+        let name = worktree_path
+            .file_name()?
+            .to_string_lossy()
+            .to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     } else {
-        value.trim_matches('"').trim_matches('\'').to_string()
+        // No .git at all — just use the directory name
+        let name = worktree_path
+            .file_name()?
+            .to_string_lossy()
+            .to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
     }
 }
 
@@ -188,7 +277,7 @@ pub fn clone_database(
     // Pre-flight: verify the source database is reachable
     println!("Verifying source database '{db_name}' is reachable...");
     let check = Command::new("pg_dump")
-        .args(["-h", &host, "-p", &port, "-d", &db_name, "--schema-only", "-t", "__devflow_preflight_nonexistent__"])
+        .args(["-h", &host, "-p", &port, "-d", &db_name, "--schema-only", "-t", "__treehouse_preflight_nonexistent__"])
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .output()?;
@@ -201,7 +290,7 @@ pub fn clone_database(
         || check_stderr.contains("Connection refused")
         || check_stderr.contains("No such file or directory")
     {
-        return Err(DevflowError::Other(format!(
+        return Err(TreehouseError::Other(format!(
             "Cannot connect to source database '{db_name}' at {host}:{port}.\n\
              Is PostgreSQL running? Check: pg_isready -h {host} -p {port}"
         )));
@@ -223,17 +312,17 @@ pub fn clone_database(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| DevflowError::Other(format!("Failed to start pg_dump: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Failed to start pg_dump: {e}")))?;
 
     let pg_dump_stdout = pg_dump
         .stdout
         .take()
-        .ok_or_else(|| DevflowError::Other("Failed to capture pg_dump stdout".to_string()))?;
+        .ok_or_else(|| TreehouseError::Other("Failed to capture pg_dump stdout".to_string()))?;
 
     let pg_dump_stderr = pg_dump
         .stderr
         .take()
-        .ok_or_else(|| DevflowError::Other("Failed to capture pg_dump stderr".to_string()))?;
+        .ok_or_else(|| TreehouseError::Other("Failed to capture pg_dump stderr".to_string()))?;
 
     // Background thread to drain pg_dump stderr (prevents deadlock)
     let stderr_handle = std::thread::spawn(move || {
@@ -265,15 +354,15 @@ pub fn clone_database(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|e| DevflowError::Other(format!("Failed to start psql in container: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Failed to start psql in container: {e}")))?;
 
     let psql_status = psql
         .wait()
-        .map_err(|e| DevflowError::Other(format!("Failed to wait for psql: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Failed to wait for psql: {e}")))?;
 
     let pg_dump_status = pg_dump
         .wait()
-        .map_err(|e| DevflowError::Other(format!("Failed to wait for pg_dump: {e}")))?;
+        .map_err(|e| TreehouseError::Other(format!("Failed to wait for pg_dump: {e}")))?;
 
     // Collect stderr from pg_dump
     let dump_errors = stderr_handle.join().unwrap_or_default();
@@ -307,7 +396,7 @@ pub fn clone_database(
     }
 
     if !pg_dump_status.success() {
-        return Err(DevflowError::Other(
+        return Err(TreehouseError::Other(
             "pg_dump failed — check the errors above".to_string(),
         ));
     }
@@ -322,42 +411,45 @@ pub fn clone_database(
     Ok(())
 }
 
-/// Parse a postgres:// URL into (host, port, db_name).
-fn parse_pg_url(url: &str) -> Result<(String, String, String)> {
-    let stripped = url
-        .strip_prefix("postgres://")
-        .or_else(|| url.strip_prefix("postgresql://"))
-        .ok_or_else(|| {
-            DevflowError::Other(format!(
-                "Invalid database URL: '{url}'. Expected postgres://host:port/dbname"
-            ))
-        })?;
-
-    // Format: [user:pass@]host[:port]/dbname
-    let after_auth = if let Some(idx) = stripped.find('@') {
-        &stripped[idx + 1..]
-    } else {
-        stripped
-    };
-
-    let (host_port, db_name) = after_auth.split_once('/').ok_or_else(|| {
-        DevflowError::Other(format!(
-            "Invalid database URL: '{url}'. Expected postgres://host:port/dbname"
-        ))
+/// Parse a postgres:// or postgresql:// URL into (host, port, db_name).
+fn parse_pg_url(raw: &str) -> Result<(String, String, String)> {
+    // The `url` crate doesn't recognize postgres:// as a special scheme,
+    // but it parses it fine as a generic URL.
+    let parsed = url::Url::parse(raw).map_err(|e| {
+        TreehouseError::Other(format!("Invalid database URL '{raw}': {e}"))
     })?;
 
-    let (host, port) = if let Some((h, p)) = host_port.split_once(':') {
-        (h.to_string(), p.to_string())
-    } else {
-        (host_port.to_string(), "5432".to_string())
-    };
+    match parsed.scheme() {
+        "postgres" | "postgresql" => {}
+        scheme => {
+            return Err(TreehouseError::Other(format!(
+                "Invalid database URL scheme '{scheme}' in '{raw}'. Expected postgres:// or postgresql://"
+            )));
+        }
+    }
 
-    Ok((host, port, db_name.to_string()))
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| TreehouseError::Other(format!("No host in database URL '{raw}'")))?
+        .to_string();
+    let port = parsed.port().unwrap_or(5432).to_string();
+    let db_name = parsed.path().trim_start_matches('/').to_string();
+
+    if db_name.is_empty() {
+        return Err(TreehouseError::Other(format!(
+            "No database name in URL '{raw}'"
+        )));
+    }
+
+    Ok((host, port, db_name))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+
+    // ── parse_pg_url ──────────────────────────────────────────────────
 
     #[test]
     fn test_parse_pg_url_basic() {
@@ -377,54 +469,358 @@ mod tests {
 
     #[test]
     fn test_parse_pg_url_with_auth() {
-        let (host, port, db) = parse_pg_url("postgres://user:pass@db.host:5433/prod").unwrap();
+        let (host, port, db) =
+            parse_pg_url("postgres://user:pass@db.host:5433/prod").unwrap();
         assert_eq!(host, "db.host");
         assert_eq!(port, "5433");
         assert_eq!(db, "prod");
     }
 
     #[test]
-    fn test_parse_pg_url_postgresql_scheme() {
-        let (host, port, db) = parse_pg_url("postgresql://localhost:5432/mydb").unwrap();
+    fn test_parse_pg_url_special_chars_in_password() {
+        let (host, port, db) =
+            parse_pg_url("postgres://user:p%40ss%23word@localhost:5432/mydb").unwrap();
         assert_eq!(host, "localhost");
         assert_eq!(port, "5432");
         assert_eq!(db, "mydb");
     }
 
     #[test]
-    fn test_parse_pg_url_invalid() {
+    fn test_parse_pg_url_postgresql_scheme() {
+        let (host, port, db) =
+            parse_pg_url("postgresql://localhost:5432/mydb").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, "5432");
+        assert_eq!(db, "mydb");
+    }
+
+    #[test]
+    fn test_parse_pg_url_with_query_params() {
+        let (host, port, db) =
+            parse_pg_url("postgres://localhost:5432/mydb?sslmode=require").unwrap();
+        assert_eq!(host, "localhost");
+        assert_eq!(port, "5432");
+        assert_eq!(db, "mydb");
+    }
+
+    #[test]
+    fn test_parse_pg_url_invalid_scheme() {
         assert!(parse_pg_url("mysql://localhost/mydb").is_err());
-        assert!(parse_pg_url("postgres://localhost").is_err());
     }
 
     #[test]
-    fn test_extract_db_name_plain() {
-        assert_eq!(extract_db_name("Reportal_development"), "Reportal_development");
+    fn test_parse_pg_url_no_db_name() {
+        assert!(parse_pg_url("postgres://localhost:5432/").is_err());
+        assert!(parse_pg_url("postgres://localhost:5432").is_err());
     }
 
     #[test]
-    fn test_extract_db_name_quoted() {
-        assert_eq!(extract_db_name("\"Reportal_development\""), "Reportal_development");
+    fn test_parse_pg_url_garbage() {
+        assert!(parse_pg_url("not a url").is_err());
+    }
+
+    // ── strip_erb / extract_erb_fallback ──────────────────────────────
+
+    #[test]
+    fn test_strip_erb_double_quoted_fallback() {
+        let input = r#"<%= ENV['DB'] || "Reportal_development" %>"#;
+        assert_eq!(strip_erb(input), "Reportal_development");
     }
 
     #[test]
-    fn test_extract_db_name_erb_double_quotes() {
+    fn test_strip_erb_single_quoted_fallback() {
+        let input = "<%= ENV['DB'] || 'Reportal_development' %>";
+        assert_eq!(strip_erb(input), "Reportal_development");
+    }
+
+    #[test]
+    fn test_strip_erb_no_fallback() {
+        let input = "<%= ENV['DB'] %>";
+        assert_eq!(strip_erb(input), "");
+    }
+
+    #[test]
+    fn test_strip_erb_mixed_content() {
+        let input = "host: localhost\ndatabase: <%= ENV['DB'] || \"mydb\" %>\nport: 5432";
+        let expected = "host: localhost\ndatabase: mydb\nport: 5432";
+        assert_eq!(strip_erb(input), expected);
+    }
+
+    #[test]
+    fn test_strip_erb_no_erb() {
+        let input = "host: localhost\ndatabase: mydb";
+        assert_eq!(strip_erb(input), input);
+    }
+
+    // ── detect_from_env_file ──────────────────────────────────────────
+
+    #[test]
+    fn test_env_file_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL=postgres://localhost:5432/mydb\n",
+        )
+        .unwrap();
         assert_eq!(
-            extract_db_name("<%= ENV['DB_NAME'] || \"Reportal_development\" %>"),
-            "Reportal_development"
+            detect_from_env_file(dir.path()),
+            Some("postgres://localhost:5432/mydb".to_string())
         );
     }
 
     #[test]
-    fn test_extract_db_name_erb_single_quotes() {
+    fn test_env_file_with_export() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "export DATABASE_URL=postgres://localhost:5432/mydb\n",
+        )
+        .unwrap();
         assert_eq!(
-            extract_db_name("<%= ENV['DB_NAME'] || 'Reportal_development' %>"),
-            "Reportal_development"
+            detect_from_env_file(dir.path()),
+            Some("postgres://localhost:5432/mydb".to_string())
         );
     }
 
     #[test]
-    fn test_extract_db_name_erb_no_fallback() {
-        assert_eq!(extract_db_name("<%= ENV['DB_NAME'] %>"), "");
+    fn test_env_file_double_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL=\"postgres://localhost:5432/mydb\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_env_file(dir.path()),
+            Some("postgres://localhost:5432/mydb".to_string())
+        );
+    }
+
+    #[test]
+    fn test_env_file_single_quoted() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "DATABASE_URL='postgres://localhost:5432/mydb'\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_env_file(dir.path()),
+            Some("postgres://localhost:5432/mydb".to_string())
+        );
+    }
+
+    #[test]
+    fn test_env_file_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_from_env_file(dir.path()), None);
+    }
+
+    #[test]
+    fn test_env_file_no_database_url() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join(".env"), "RAILS_ENV=development\n").unwrap();
+        assert_eq!(detect_from_env_file(dir.path()), None);
+    }
+
+    #[test]
+    fn test_env_file_with_comments() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join(".env"),
+            "# This is a comment\nRAILS_ENV=development\nDATABASE_URL=postgres://localhost/db\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_env_file(dir.path()),
+            Some("postgres://localhost/db".to_string())
+        );
+    }
+
+    // ── detect_from_database_yml ──────────────────────────────────────
+
+    #[test]
+    fn test_database_yml_plain_value() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/database.yml"),
+            "development:\n  database: Reportal_development\n  host: localhost\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_database_yml(dir.path()),
+            Some("postgres://localhost:5432/Reportal_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_database_yml_erb_double_quote() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/database.yml"),
+            "development:\n  database: <%= ENV['DB'] || \"Reportal_development\" %>\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_database_yml(dir.path()),
+            Some("postgres://localhost:5432/Reportal_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_database_yml_erb_single_quote() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/database.yml"),
+            "development:\n  database: <%= ENV['DB'] || 'Reportal_development' %>\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_database_yml(dir.path()),
+            Some("postgres://localhost:5432/Reportal_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_database_yml_erb_no_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/database.yml"),
+            "development:\n  database: <%= ENV['DB'] %>\n",
+        )
+        .unwrap();
+        // ERB with no fallback → empty string → key has empty value → None
+        assert_eq!(detect_from_database_yml(dir.path()), None);
+    }
+
+    #[test]
+    fn test_database_yml_with_anchors() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir_all(dir.path().join("config")).unwrap();
+        fs::write(
+            dir.path().join("config/database.yml"),
+            "default: &default\n  adapter: postgresql\n  host: localhost\n\ndevelopment:\n  <<: *default\n  database: myapp_development\n",
+        )
+        .unwrap();
+        assert_eq!(
+            detect_from_database_yml(dir.path()),
+            Some("postgres://localhost:5432/myapp_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_database_yml_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(detect_from_database_yml(dir.path()), None);
+    }
+
+    // ── detect_from_convention ────────────────────────────────────────
+
+    #[test]
+    fn test_convention_normal_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("MyProject");
+        fs::create_dir_all(repo_path.join(".git")).unwrap();
+        assert_eq!(
+            detect_from_convention(&repo_path),
+            Some("postgres://localhost:5432/MyProject_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_convention_hyphenated_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo_path = dir.path().join("my-project");
+        fs::create_dir_all(repo_path.join(".git")).unwrap();
+        assert_eq!(
+            detect_from_convention(&repo_path),
+            Some("postgres://localhost:5432/my_project_development".to_string())
+        );
+    }
+
+    #[test]
+    fn test_convention_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        // Simulate a parent repo at /tmp/xxx/Reportal/.git/worktrees/task-name
+        let parent = dir.path().join("Reportal");
+        fs::create_dir_all(parent.join(".git/worktrees/task-name")).unwrap();
+
+        // The worktree directory with a .git file
+        let worktree = dir.path().join("task-name");
+        fs::create_dir_all(&worktree).unwrap();
+        let gitdir = parent.join(".git/worktrees/task-name");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}", gitdir.display()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            detect_from_convention(&worktree),
+            Some("postgres://localhost:5432/Reportal_development".to_string())
+        );
+    }
+
+    // ── project_name_from_path ────────────────────────────────────────
+
+    #[test]
+    fn test_project_name_normal_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("Reportal");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        assert_eq!(
+            project_name_from_path(&project),
+            Some("Reportal".to_string())
+        );
+    }
+
+    #[test]
+    fn test_project_name_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let parent = dir.path().join("Reportal");
+        fs::create_dir_all(parent.join(".git/worktrees/fix-bug")).unwrap();
+
+        let worktree = dir.path().join("fix-bug");
+        fs::create_dir_all(&worktree).unwrap();
+        let gitdir = parent.join(".git/worktrees/fix-bug");
+        fs::write(
+            worktree.join(".git"),
+            format!("gitdir: {}", gitdir.display()),
+        )
+        .unwrap();
+
+        assert_eq!(
+            project_name_from_path(&worktree),
+            Some("Reportal".to_string())
+        );
+    }
+
+    #[test]
+    fn test_project_name_no_git() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("something");
+        fs::create_dir_all(&project).unwrap();
+        assert_eq!(
+            project_name_from_path(&project),
+            Some("something".to_string())
+        );
+    }
+
+    // ── detect_from_running_postgres (parse logic only) ───────────────
+
+    #[test]
+    #[ignore] // Requires a running Postgres instance
+    fn test_detect_from_running_postgres() {
+        let dir = tempfile::tempdir().unwrap();
+        let project = dir.path().join("Reportal");
+        fs::create_dir_all(project.join(".git")).unwrap();
+        // This test only works if Postgres is running and has Reportal_development
+        if let Some(url) = detect_from_running_postgres(&project) {
+            assert!(url.contains("Reportal_development"));
+        }
     }
 }

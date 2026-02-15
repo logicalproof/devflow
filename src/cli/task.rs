@@ -6,7 +6,7 @@ use console::style;
 use serde::{Deserialize, Serialize};
 
 use crate::config::project::ProjectConfig;
-use crate::error::{DevflowError, Result};
+use crate::error::{TreehouseError, Result};
 use crate::git::branch;
 use crate::git::repo::GitRepo;
 
@@ -85,12 +85,12 @@ impl std::fmt::Display for TaskState {
     }
 }
 
-fn tasks_path(devflow_dir: &Path) -> std::path::PathBuf {
-    devflow_dir.join("tasks.json")
+fn tasks_path(treehouse_dir: &Path) -> std::path::PathBuf {
+    treehouse_dir.join("tasks.json")
 }
 
-pub fn load_tasks(devflow_dir: &Path) -> Result<Vec<Task>> {
-    let path = tasks_path(devflow_dir);
+pub fn load_tasks(treehouse_dir: &Path) -> Result<Vec<Task>> {
+    let path = tasks_path(treehouse_dir);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -99,8 +99,8 @@ pub fn load_tasks(devflow_dir: &Path) -> Result<Vec<Task>> {
     Ok(tasks)
 }
 
-fn save_tasks(devflow_dir: &Path, tasks: &[Task]) -> Result<()> {
-    let path = tasks_path(devflow_dir);
+fn save_tasks(treehouse_dir: &Path, tasks: &[Task]) -> Result<()> {
+    let path = tasks_path(treehouse_dir);
     let contents = serde_json::to_string_pretty(tasks)?;
     std::fs::write(path, contents)?;
     Ok(())
@@ -110,15 +110,15 @@ fn find_task_mut<'a>(tasks: &'a mut [Task], name: &str) -> Result<&'a mut Task> 
     tasks
         .iter_mut()
         .find(|t| t.name == name)
-        .ok_or_else(|| DevflowError::TaskNotFound(name.to_string()))
+        .ok_or_else(|| TreehouseError::TaskNotFound(name.to_string()))
 }
 
-fn ensure_devflow(git: &GitRepo) -> Result<std::path::PathBuf> {
-    let devflow_dir = git.devflow_dir();
-    if !devflow_dir.join("config.yml").exists() {
-        return Err(DevflowError::NotInitialized);
+fn ensure_treehouse(git: &GitRepo) -> Result<std::path::PathBuf> {
+    let dir = git.treehouse_dir();
+    if !dir.join("config.yml").exists() {
+        return Err(TreehouseError::NotInitialized);
     }
-    Ok(devflow_dir)
+    Ok(dir)
 }
 
 pub async fn run(cmd: TaskCommands) -> Result<()> {
@@ -139,16 +139,16 @@ pub async fn run(cmd: TaskCommands) -> Result<()> {
 
 async fn create(name: &str, task_type: &str, description: Option<&str>) -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = ensure_devflow(&git)?;
-    let mut tasks = load_tasks(&devflow_dir)?;
+    let treehouse_dir = ensure_treehouse(&git)?;
+    let mut tasks = load_tasks(&treehouse_dir)?;
 
     // Check for duplicate
     if tasks.iter().any(|t| t.name == name) {
-        return Err(DevflowError::TaskAlreadyExists(name.to_string()));
+        return Err(TreehouseError::TaskAlreadyExists(name.to_string()));
     }
 
     // Load project config for branch naming
-    let config = ProjectConfig::load(&devflow_dir.join("config.yml"))?;
+    let config = ProjectConfig::load(&treehouse_dir.join("config.yml"))?;
     let branch_name = branch::format_branch_name(&config.project_name, task_type, name);
 
     // Create the branch
@@ -166,7 +166,7 @@ async fn create(name: &str, task_type: &str, description: Option<&str>) -> Resul
     };
 
     tasks.push(task);
-    save_tasks(&devflow_dir, &tasks)?;
+    save_tasks(&treehouse_dir, &tasks)?;
 
     println!(
         "{} Created task '{}' with branch '{}'",
@@ -180,11 +180,11 @@ async fn create(name: &str, task_type: &str, description: Option<&str>) -> Resul
 
 async fn list() -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = ensure_devflow(&git)?;
-    let tasks = load_tasks(&devflow_dir)?;
+    let treehouse_dir = ensure_treehouse(&git)?;
+    let tasks = load_tasks(&treehouse_dir)?;
 
     if tasks.is_empty() {
-        println!("No tasks. Create one with: devflow task create <name>");
+        println!("No tasks. Create one with: th task create <name>");
         return Ok(());
     }
 
@@ -212,13 +212,13 @@ async fn list() -> Result<()> {
 
 async fn show(name: &str) -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = ensure_devflow(&git)?;
-    let tasks = load_tasks(&devflow_dir)?;
+    let treehouse_dir = ensure_treehouse(&git)?;
+    let tasks = load_tasks(&treehouse_dir)?;
 
     let task = tasks
         .iter()
         .find(|t| t.name == name)
-        .ok_or_else(|| DevflowError::TaskNotFound(name.to_string()))?;
+        .ok_or_else(|| TreehouseError::TaskNotFound(name.to_string()))?;
 
     println!("{}", style(&task.name).bold());
     println!("  Type:        {}", task.task_type);
@@ -233,13 +233,13 @@ async fn show(name: &str) -> Result<()> {
 
 async fn transition(name: &str, expected: TaskState, target: TaskState) -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = ensure_devflow(&git)?;
-    let mut tasks = load_tasks(&devflow_dir)?;
+    let treehouse_dir = ensure_treehouse(&git)?;
+    let mut tasks = load_tasks(&treehouse_dir)?;
 
     let task = find_task_mut(&mut tasks, name)?;
 
     if task.state != expected {
-        return Err(DevflowError::InvalidTaskState {
+        return Err(TreehouseError::InvalidTaskState {
             current: task.state.to_string(),
             target: target.to_string(),
         });
@@ -247,7 +247,7 @@ async fn transition(name: &str, expected: TaskState, target: TaskState) -> Resul
 
     task.state = target.clone();
     task.updated_at = Utc::now();
-    save_tasks(&devflow_dir, &tasks)?;
+    save_tasks(&treehouse_dir, &tasks)?;
 
     println!(
         "{} Task '{}' is now {}",
@@ -261,13 +261,13 @@ async fn transition(name: &str, expected: TaskState, target: TaskState) -> Resul
 
 async fn close(name: &str) -> Result<()> {
     let git = GitRepo::discover()?;
-    let devflow_dir = ensure_devflow(&git)?;
-    let mut tasks = load_tasks(&devflow_dir)?;
+    let treehouse_dir = ensure_treehouse(&git)?;
+    let mut tasks = load_tasks(&treehouse_dir)?;
 
     let task = find_task_mut(&mut tasks, name)?;
 
     if task.state == TaskState::Closed {
-        return Err(DevflowError::InvalidTaskState {
+        return Err(TreehouseError::InvalidTaskState {
             current: task.state.to_string(),
             target: "closed".to_string(),
         });
@@ -277,14 +277,14 @@ async fn close(name: &str) -> Result<()> {
     let _ = branch::delete_branch(&git, &task.branch);
 
     // Clean up worktree if it exists
-    let worktree_path = devflow_dir.join("worktrees").join(name);
+    let worktree_path = treehouse_dir.join("worktrees").join(name);
     if worktree_path.exists() {
         let _ = crate::git::worktree::remove_worktree(&git.root, &worktree_path);
     }
 
     task.state = TaskState::Closed;
     task.updated_at = Utc::now();
-    save_tasks(&devflow_dir, &tasks)?;
+    save_tasks(&treehouse_dir, &tasks)?;
 
     println!(
         "{} Task '{}' closed and resources cleaned up",
