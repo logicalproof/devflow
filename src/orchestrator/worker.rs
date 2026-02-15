@@ -67,17 +67,12 @@ pub fn spawn(
     // 5½. Copy essential files into worktree from repo root.
     // Always overwrite: the repo root may have edits not yet committed to the branch,
     // and the worktree's git checkout would have a stale version.
-    for filename in &["Dockerfile.devflow", ".env"] {
+    for filename in &["Dockerfile.dev", "Dockerfile.devflow", ".env"] {
         let repo_file = git.root.join(filename);
         let worktree_file = worktree_path.join(filename);
         if repo_file.exists() {
             let _ = std::fs::copy(&repo_file, &worktree_file);
         }
-    }
-
-    // 5½b. Create common Rails tmp directories (gitignored, so missing in worktrees)
-    for dir in &["tmp/pids", "tmp/cache", "tmp/sockets", "log"] {
-        let _ = std::fs::create_dir_all(worktree_path.join(dir));
     }
 
     // Warn if .env exists but may not be gitignored
@@ -186,13 +181,6 @@ pub fn spawn(
                 let _ = branch::delete_branch(git, branch_name);
             }
             return Err(e);
-        }
-
-        // 5e½. Install dev/test gems (non-fatal: production Dockerfiles exclude them)
-        println!("Installing dev/test gems...");
-        match compose_mgr::exec(&cf, "app", "bundle install --quiet") {
-            Ok(()) => println!("  Gems installed."),
-            Err(e) => eprintln!("  Warning: bundle install failed: {e}"),
         }
 
         // 5e¾. Database setup (non-fatal: warn on failure, don't tear down)

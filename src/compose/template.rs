@@ -31,40 +31,6 @@ pub fn render(template: &str, vars: &TemplateVars) -> String {
         .replace("{{WORKTREE_PATH}}", vars.worktree_path)
 }
 
-/// Detect if a Dockerfile has a stage named "build" (multi-stage).
-/// If so, devflow should target it for dev containers since it has build tools.
-pub fn detect_build_target(dockerfile_path: &Path) -> Option<String> {
-    let contents = std::fs::read_to_string(dockerfile_path).ok()?;
-    for line in contents.lines() {
-        let trimmed = line.trim().to_lowercase();
-        // Match: FROM ... AS build
-        if trimmed.starts_with("from ") && trimmed.ends_with(" as build") {
-            return Some("build".to_string());
-        }
-    }
-    None
-}
-
-/// Inject a `target:` directive under the `build:` section of a compose file.
-pub fn inject_build_target(rendered: &str, target: &str) -> String {
-    let mut result = String::new();
-    let mut injected = false;
-
-    for line in rendered.lines() {
-        result.push_str(line);
-        result.push('\n');
-
-        if !injected && line.trim().starts_with("dockerfile:") {
-            let indent = &line[..line.len() - line.trim_start().len()];
-            result.push_str(indent);
-            result.push_str(&format!("target: {target}\n"));
-            injected = true;
-        }
-    }
-
-    result
-}
-
 /// Extract ARG names from a Dockerfile that have a matching key in the .env file.
 /// Only includes ARGs where the .env provides a value, so Dockerfile defaults are preserved.
 pub fn extract_dockerfile_args(dockerfile_path: &Path, env_path: &Path) -> Vec<String> {
@@ -297,27 +263,29 @@ pub fn default_rails_template() -> &'static str {
   app:
     build:
       context: "{{WORKTREE_PATH}}"
-      dockerfile: Dockerfile.devflow
+      dockerfile: Dockerfile.dev
     container_name: devflow-{{WORKER_NAME}}-app
-    user: root
-    command: >
-      bash -c "rm -f tmp/pids/server.pid && sleep infinity"
+    command: ["sleep", "infinity"]
     ports:
       - "{{APP_PORT}}:3000"
     volumes:
       - "{{WORKTREE_PATH}}:/app"
+      - devflow-{{WORKER_NAME}}-bundle:/usr/local/bundle
+      - devflow-{{WORKER_NAME}}-node-modules:/app/node_modules
     env_file:
       - path: "{{WORKTREE_PATH}}/.env"
         required: false
     environment:
-      - RAILS_ENV=development
       - DATABASE_URL=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_dev
       - REDIS_URL=redis://redis:6379/0
-      - BUNDLE_DEPLOYMENT=
-      - BUNDLE_WITHOUT=
+      - RAILS_ENV=development
     depends_on:
-      - db
-      - redis
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    stdin_open: true
+    tty: true
 
   db:
     image: postgres:16-alpine
@@ -328,11 +296,25 @@ pub fn default_rails_template() -> &'static str {
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=postgres
       - POSTGRES_DB={{WORKER_NAME}}_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7-alpine
     container_name: devflow-{{WORKER_NAME}}-redis
     ports:
       - "{{REDIS_PORT}}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  devflow-{{WORKER_NAME}}-bundle:
+  devflow-{{WORKER_NAME}}-node-modules:
 "#
 }

@@ -43,8 +43,8 @@ pub fn generate_compose_file(
     };
     let rendered = template::render(&tmpl, &vars);
 
-    // Auto-extract ARG directives from Dockerfile, only for vars defined in .env
-    let dockerfile_path = worktree_path.join("Dockerfile.devflow");
+    // Detect which Dockerfile the template references for build arg/secret extraction
+    let dockerfile_path = detect_dockerfile(&rendered, worktree_path);
     let env_path = worktree_path.join(".env");
     let build_args = template::extract_dockerfile_args(&dockerfile_path, &env_path);
 
@@ -62,14 +62,6 @@ pub fn generate_compose_file(
             build_args
         );
     }
-
-    // Auto-detect multi-stage Dockerfile and target the build stage for dev
-    let rendered = if let Some(target) = template::detect_build_target(&dockerfile_path) {
-        println!("  Multi-stage Dockerfile detected, targeting '{target}' stage");
-        template::inject_build_target(&rendered, &target)
-    } else {
-        rendered
-    };
 
     // Auto-extract build secrets (RUN --mount=type=secret) from Dockerfile
     let build_secrets = template::extract_dockerfile_secrets(&dockerfile_path, &env_path);
@@ -350,6 +342,28 @@ fn normalize_env_file(src: &Path, dst: &Path) -> std::io::Result<()> {
     }
 
     std::fs::write(dst, normalized)
+}
+
+/// Detect which Dockerfile the rendered compose template references.
+/// Parses the `dockerfile:` line from the rendered YAML and resolves it
+/// relative to the worktree. Falls back to Dockerfile.dev > Dockerfile.devflow.
+fn detect_dockerfile(rendered: &str, worktree_path: &Path) -> PathBuf {
+    for line in rendered.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("dockerfile:") {
+            let name = trimmed.strip_prefix("dockerfile:").unwrap().trim();
+            let path = worktree_path.join(name);
+            if path.exists() {
+                return path;
+            }
+        }
+    }
+    // Fallback: prefer Dockerfile.dev, then Dockerfile.devflow
+    let dev = worktree_path.join("Dockerfile.dev");
+    if dev.exists() {
+        return dev;
+    }
+    worktree_path.join("Dockerfile.devflow")
 }
 
 /// Derive the project name from the compose file's parent directory.
