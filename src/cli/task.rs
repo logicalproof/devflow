@@ -89,7 +89,7 @@ fn tasks_path(devflow_dir: &Path) -> std::path::PathBuf {
     devflow_dir.join("tasks.json")
 }
 
-fn load_tasks(devflow_dir: &Path) -> Result<Vec<Task>> {
+pub fn load_tasks(devflow_dir: &Path) -> Result<Vec<Task>> {
     let path = tasks_path(devflow_dir);
     if !path.exists() {
         return Ok(Vec::new());

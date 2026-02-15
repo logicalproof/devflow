@@ -1,6 +1,7 @@
 use clap::Subcommand;
 use console::style;
 
+use crate::claude_md;
 use crate::config::local::LocalConfig;
 use crate::error::{DevflowError, Result};
 use crate::git::repo::GitRepo;
@@ -25,6 +26,8 @@ pub enum TmuxCommands {
     Status,
     /// Generate a default tmux-layout.json template
     InitTemplate,
+    /// Generate a default claude-md.template for customization
+    InitClaudeTemplate,
 }
 
 pub async fn run(cmd: TmuxCommands) -> Result<()> {
@@ -34,6 +37,7 @@ pub async fn run(cmd: TmuxCommands) -> Result<()> {
         TmuxCommands::Layout { preset } => set_layout(&preset).await,
         TmuxCommands::Status => status().await,
         TmuxCommands::InitTemplate => init_template().await,
+        TmuxCommands::InitClaudeTemplate => init_claude_template().await,
     }
 }
 
@@ -207,6 +211,41 @@ async fn init_template() -> Result<()> {
     println!(
         "  Workers spawned with a template get a dedicated tmux session with multiple windows/panes."
     );
+
+    Ok(())
+}
+
+async fn init_claude_template() -> Result<()> {
+    let git = GitRepo::discover()?;
+    let devflow_dir = git.devflow_dir();
+
+    if !devflow_dir.join("config.yml").exists() {
+        return Err(DevflowError::NotInitialized);
+    }
+
+    let path = devflow_dir.join("claude-md.template");
+    if path.exists() {
+        println!(
+            "{} Template already exists at {}",
+            style("!").yellow(),
+            path.display()
+        );
+        println!("  Delete it first if you want to regenerate.");
+        return Ok(());
+    }
+
+    std::fs::write(&path, claude_md::default_template())?;
+
+    println!(
+        "{} Created CLAUDE.md template at {}",
+        style("✓").green().bold(),
+        path.display()
+    );
+    println!("  Edit it to customize the CLAUDE.md generated in each worker's worktree.");
+    println!("  Available variables: {{{{WORKTREE_PATH}}}}, {{{{WORKER_NAME}}}}, {{{{BRANCH_NAME}}}},");
+    println!("    {{{{PROJECT_NAME}}}}, {{{{TASK_TYPE}}}}, {{{{DETECTED_TYPES}}}}, {{{{COMPOSE_FILE}}}},");
+    println!("    {{{{COMPOSE_PROJECT}}}}, {{{{APP_PORT}}}}, {{{{DB_PORT}}}}, {{{{REDIS_PORT}}}}");
+    println!("  Conditionals: {{{{#if COMPOSE_ENABLED}}}}...{{{{/if}}}}, {{{{#if !COMPOSE_ENABLED}}}}...{{{{/if}}}}");
 
     Ok(())
 }
