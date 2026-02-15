@@ -2,6 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::compose::manager as compose_mgr;
 use crate::error::Result;
 
 use super::session;
@@ -28,6 +29,11 @@ pub struct PaneTemplate {
     pub directory: Option<String>,
     #[serde(default)]
     pub focus: bool,
+    /// When `true`, this pane always runs on the host even when compose is active.
+    /// When `false` (default), pane commands are wrapped with `docker compose exec`
+    /// if a compose stack is running.
+    #[serde(default)]
+    pub host: bool,
 }
 
 fn default_layout() -> String {
@@ -40,6 +46,7 @@ pub struct WorkspaceVars<'a> {
     pub app_port: Option<u16>,
     pub db_port: Option<u16>,
     pub redis_port: Option<u16>,
+    pub compose_file: Option<&'a Path>,
 }
 
 /// Load a workspace template from `.devflow/tmux-layout.json`.
@@ -56,6 +63,15 @@ pub fn load_template(devflow_dir: &Path) -> Result<Option<WorkspaceTemplate>> {
 
 /// Replace `{{VAR}}` placeholders in all command and directory strings.
 pub fn render_template(template: &WorkspaceTemplate, vars: &WorkspaceVars) -> WorkspaceTemplate {
+    let compose_file_str = vars
+        .compose_file
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let compose_project_str = vars
+        .compose_file
+        .map(|p| compose_mgr::project_name(p))
+        .unwrap_or_default();
+
     let substitute = |s: &str| -> String {
         let mut result = s.to_string();
         result = result.replace("{{WORKTREE_PATH}}", vars.worktree_path);
@@ -63,6 +79,8 @@ pub fn render_template(template: &WorkspaceTemplate, vars: &WorkspaceVars) -> Wo
         result = result.replace("{{APP_PORT}}", &vars.app_port.unwrap_or(3000).to_string());
         result = result.replace("{{DB_PORT}}", &vars.db_port.unwrap_or(5432).to_string());
         result = result.replace("{{REDIS_PORT}}", &vars.redis_port.unwrap_or(6379).to_string());
+        result = result.replace("{{COMPOSE_FILE}}", &compose_file_str);
+        result = result.replace("{{COMPOSE_PROJECT}}", &compose_project_str);
         result
     };
 
@@ -80,6 +98,7 @@ pub fn render_template(template: &WorkspaceTemplate, vars: &WorkspaceVars) -> Wo
                         command: p.command.as_ref().map(|c| substitute(c)),
                         directory: p.directory.as_ref().map(|d| substitute(d)),
                         focus: p.focus,
+                        host: p.host,
                     })
                     .collect(),
             })
@@ -99,11 +118,25 @@ pub fn worker_session_exists(hub_session: &str, task_name: &str) -> bool {
 }
 
 /// Create a per-worker tmux session with windows and panes from the template.
+///
+/// When `compose_file` is `Some`, non-host panes have their commands wrapped with
+/// `docker compose exec app` so they run inside the container instead of on the host.
 pub fn create_worker_session(
     session_name: &str,
     template: &WorkspaceTemplate,
     default_dir: &Path,
+    compose_file: Option<&Path>,
 ) -> Result<()> {
+    // Build the exec prefix once if compose is active
+    let exec_prefix = compose_file.map(|cf| {
+        let project = compose_mgr::project_name(cf);
+        format!(
+            "docker compose -f \"{}\" -p \"{}\" exec app",
+            cf.to_string_lossy(),
+            project,
+        )
+    });
+
     for (win_idx, window) in template.windows.iter().enumerate() {
         let win_target = format!("{session_name}:{}", window.name);
 
@@ -160,9 +193,23 @@ pub fn create_worker_session(
 
         // Send commands to each pane
         for (pane_idx, pane) in window.panes.iter().enumerate() {
-            if let Some(ref cmd) = pane.command {
-                let pane_target = format!("{win_target}.{pane_idx}");
-                session::send_keys_to_pane(&pane_target, cmd)?;
+            let pane_target = format!("{win_target}.{pane_idx}");
+
+            match (&exec_prefix, pane.host) {
+                // Compose active + non-host pane: wrap command with docker compose exec
+                (Some(prefix), false) => {
+                    if let Some(ref cmd) = pane.command {
+                        session::send_keys_to_pane(&pane_target, &format!("{prefix} {cmd}"))?;
+                    } else {
+                        session::send_keys_to_pane(&pane_target, &format!("{prefix} bash"))?;
+                    }
+                }
+                // Host pane or no compose: run command directly (current behavior)
+                _ => {
+                    if let Some(ref cmd) = pane.command {
+                        session::send_keys_to_pane(&pane_target, cmd)?;
+                    }
+                }
             }
         }
 
@@ -193,21 +240,25 @@ pub fn default_template() -> WorkspaceTemplate {
                         command: Some("tail -f log/development.log".to_string()),
                         directory: None,
                         focus: false,
+                        host: false,
                     },
                     PaneTemplate {
-                        command: Some("bundle exec puma -p {{APP_PORT}}".to_string()),
+                        command: Some("rails console".to_string()),
                         directory: None,
                         focus: false,
+                        host: false,
                     },
                     PaneTemplate {
                         command: Some("bundle exec sidekiq".to_string()),
                         directory: None,
                         focus: false,
+                        host: false,
                     },
                     PaneTemplate {
                         command: None,
                         directory: None,
                         focus: false,
+                        host: false,
                     },
                 ],
             },
@@ -219,21 +270,25 @@ pub fn default_template() -> WorkspaceTemplate {
                         command: Some("vim".to_string()),
                         directory: None,
                         focus: true,
+                        host: true,
                     },
                     PaneTemplate {
                         command: None,
                         directory: None,
                         focus: false,
+                        host: true,
                     },
                     PaneTemplate {
                         command: Some("claude".to_string()),
                         directory: None,
                         focus: false,
+                        host: true,
                     },
                     PaneTemplate {
                         command: Some("rails console".to_string()),
                         directory: None,
                         focus: false,
+                        host: false,
                     },
                 ],
             },
