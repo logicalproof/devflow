@@ -29,15 +29,6 @@ pub enum TreehouseError {
     #[error("Tmux command failed: {0}")]
     TmuxCommand(String),
 
-    #[error("Task not found: {0}")]
-    TaskNotFound(String),
-
-    #[error("Task already exists: {0}")]
-    TaskAlreadyExists(String),
-
-    #[error("Invalid task state transition: {current} -> {target}")]
-    InvalidTaskState { current: String, target: String },
-
     #[error("Grove already exists for task: {0}")]
     GroveAlreadyExists(String),
 

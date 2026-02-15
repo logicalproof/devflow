@@ -4,7 +4,6 @@ use std::time::Duration;
 use sysinfo::Disks;
 
 use crate::claude_md;
-use crate::cli::task as cli_task;
 use crate::compose::{db as compose_db, manager as compose_mgr, ports};
 use crate::config::lock::FileLock;
 use crate::config::project::ProjectConfig;
@@ -21,6 +20,7 @@ pub fn plant(
     treehouse_dir: &Path,
     task_name: &str,
     branch_name: &str,
+    task_type: &str,
     tmux_session: &str,
     min_disk_mb: u64,
     initial_command: Option<&str>,
@@ -235,16 +235,6 @@ pub fn plant(
         let detected_types = ProjectConfig::load(&config_path)
             .map(|c| c.detected_types.join(", "))
             .unwrap_or_default();
-        let task_type = cli_task::load_tasks(treehouse_dir)
-            .ok()
-            .and_then(|tasks| {
-                tasks
-                    .iter()
-                    .find(|t| t.name == task_name)
-                    .map(|t| t.task_type.clone())
-            })
-            .unwrap_or_default();
-
         let compose_file_str = compose_file
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
@@ -259,7 +249,7 @@ pub fn plant(
             worker_name: task_name,
             branch_name,
             project_name: &project_name,
-            task_type: &task_type,
+            task_type,
             detected_types: &detected_types,
             compose_enabled: compose_file.is_some(),
             compose_file: &compose_file_str,

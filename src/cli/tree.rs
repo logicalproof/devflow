@@ -4,13 +4,11 @@ use clap::Subcommand;
 use console::style;
 
 use crate::config::local::LocalConfig;
+use crate::config::project::ProjectConfig;
 use crate::error::{TreehouseError, Result};
-use crate::git::repo::GitRepo;
-use crate::git::worktree as wt;
+use crate::git::{branch, repo::GitRepo, worktree as wt};
 use crate::orchestrator::grove as orch_grove;
 use crate::tmux::session;
-
-use super::task::{self, TaskState};
 
 #[derive(Subcommand)]
 pub enum TreeCommands {
@@ -18,6 +16,9 @@ pub enum TreeCommands {
     Plant {
         /// Task name
         task: String,
+        /// Task type (feature, bugfix, refactor, chore)
+        #[arg(short = 't', long = "type", default_value = "feature")]
+        task_type: String,
         /// Launch claude with this prompt in the tree's tmux window
         #[arg(long)]
         prompt: Option<String>,
@@ -55,8 +56,8 @@ pub enum TreeCommands {
 
 pub async fn run(cmd: TreeCommands) -> Result<()> {
     match cmd {
-        TreeCommands::Plant { task, prompt, prompt_file } => {
-            plant(&task, prompt, prompt_file).await
+        TreeCommands::Plant { task, task_type, prompt, prompt_file } => {
+            plant(&task, &task_type, prompt, prompt_file).await
         }
         TreeCommands::List => list().await,
         TreeCommands::Status => status().await,
@@ -78,6 +79,7 @@ fn ensure_treehouse(git: &GitRepo) -> Result<std::path::PathBuf> {
 
 async fn plant(
     task_name: &str,
+    task_type: &str,
     prompt: Option<String>,
     prompt_file: Option<PathBuf>,
 ) -> Result<()> {
@@ -86,30 +88,9 @@ async fn plant(
 
     let local = LocalConfig::load(&treehouse_dir.join("local.yml"))?;
 
-    // Load task to get branch name
-    let tasks_path = treehouse_dir.join("tasks.json");
-    let contents = std::fs::read_to_string(&tasks_path)?;
-    let mut tasks: Vec<task::Task> = serde_json::from_str(&contents)?;
-
-    let task = tasks
-        .iter_mut()
-        .find(|t| t.name == task_name)
-        .ok_or_else(|| TreehouseError::TaskNotFound(task_name.to_string()))?;
-
-    if task.state == TaskState::Closed {
-        return Err(TreehouseError::InvalidTaskState {
-            current: task.state.to_string(),
-            target: "plant tree".to_string(),
-        });
-    }
-
-    let branch_name = task.branch.clone();
-
-    // Set task to active
-    task.state = TaskState::Active;
-    task.updated_at = chrono::Utc::now();
-    let tasks_json = serde_json::to_string_pretty(&tasks)?;
-    std::fs::write(&tasks_path, tasks_json)?;
+    // Generate branch name from project config
+    let config = ProjectConfig::load(&treehouse_dir.join("config.yml"))?;
+    let branch_name = branch::format_branch_name(&config.project_name, task_type, task_name);
 
     // Resolve prompt text
     let prompt_text = match (prompt, prompt_file) {
@@ -134,6 +115,7 @@ async fn plant(
         &treehouse_dir,
         task_name,
         &branch_name,
+        task_type,
         &local.tmux_session_name,
         local.min_disk_space_mb,
         initial_command.as_deref(),

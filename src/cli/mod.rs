@@ -3,7 +3,6 @@ pub mod containerize;
 pub mod detect;
 pub mod grove;
 pub mod init;
-pub mod task;
 pub mod tree;
 
 use clap::{Parser, Subcommand};
@@ -22,10 +21,6 @@ pub enum Commands {
 
     /// Detect project type and frameworks
     Detect,
-
-    /// Manage tasks
-    #[command(subcommand)]
-    Task(task::TaskCommands),
 
     /// Containerized development environments
     #[command(subcommand)]
@@ -46,7 +41,6 @@ pub async fn dispatch(cmd: Commands) -> crate::error::Result<()> {
     match cmd {
         Commands::Init => init::run().await,
         Commands::Detect => detect::run().await,
-        Commands::Task(cmd) => task::run(cmd).await,
         Commands::Grove(cmd) => grove::run(cmd).await,
         Commands::Tree(cmd) => tree::run(cmd).await,
         Commands::Containerize => containerize::run().await,

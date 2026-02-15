@@ -35,21 +35,16 @@ cd your-project
 th init
 # => Creates .treehouse/ directory, detects project type, writes config
 
-# 2. Create tasks for what you want to work on
-th task create add-auth -t feature -d "Add JWT authentication"
-th task create fix-nav -t bugfix -d "Fix navbar on mobile"
-th task create refactor-db -t refactor
+# 2. Plant groves (containerized) or trees (lightweight)
+th grove plant add-auth -t feature           # full Docker Compose stack
+th tree plant fix-nav -t bugfix              # just a worktree + tmux
+th grove plant refactor-db -t refactor --transplant  # containerized + db clone
 
-# 3. Plant groves (containerized) or trees (lightweight)
-th grove plant add-auth              # full Docker Compose stack
-th tree plant fix-nav                # just a worktree + tmux
-th grove plant refactor-db --transplant  # containerized + db clone
-
-# 4. Attach to a session and work in parallel
+# 3. Attach to a session and work in parallel
 th grove attach add-auth
 # => Attached to tmux session with worktree, containers running
 
-# 5. When done with a task, stop or uproot
+# 4. When done, stop or uproot
 th grove stop add-auth
 # => Tears down containers/tmux but keeps worktree + branch
 # => Re-plant later with: th grove plant add-auth
@@ -57,13 +52,11 @@ th grove stop add-auth
 th grove uproot add-auth
 # => Removes everything: worktree, branch, tmux, containers, state
 # => Refuses if there are uncommitted changes (use --force to override)
-
-th task close add-auth
 ```
 
 ## How It Works
 
-When you run `th grove plant <task>`, treehouse:
+When you run `th grove plant <name>`, treehouse:
 
 1. Acquires a file lock to prevent races
 2. Checks that 500MB+ of disk space is free
@@ -72,9 +65,9 @@ When you run `th grove plant <task>`, treehouse:
 5. Generates a Docker Compose stack (app + db + redis) with unique ports
 6. Waits for containers to be healthy
 7. Opens a tmux window named `<task>` cd'd into the worktree
-8. Saves state to `.treehouse/groves/<task>.json`
+8. Saves state to `.treehouse/groves/<name>.json`
 
-`th tree plant <task>` does steps 1–4 and 7–8, skipping containers entirely.
+`th tree plant <name>` does steps 1–4 and 7–8, skipping containers entirely.
 
 If any step fails, everything rolls back in reverse order. No half-created state.
 
@@ -103,45 +96,14 @@ th detect
 # =>   - node
 ```
 
-### `th task`
-
-Manage development tasks. Each task has a name, type, description, state, and associated git branch.
-
-```bash
-# Create a task — auto-creates a branch from HEAD
-th task create my-feature
-th task create my-feature -t bugfix -d "Fix the login page"
-# Task types: feature (default), bugfix, refactor, chore
-
-# List all tasks with their state
-th task list
-# => Tasks:
-# =>   my-feature [created] (myapp/feature/my-feature)
-# =>   fix-login [active] (myapp/bugfix/fix-login)
-
-# Show full details for a task
-th task show my-feature
-
-# State transitions
-th task pause my-feature    # active → paused
-th task resume my-feature   # paused → active
-th task complete my-feature # active → completed
-
-# Close a task (cleans up branch + worktree)
-th task close my-feature    # any state → closed
-```
-
-**Task states:** `created` → `active` → `paused` → `completed` → `closed`
-
-Planting a grove or tree automatically moves the task to `active`. Closing a task deletes its branch and worktree if they still exist.
-
 ### `th grove`
 
 Containerized development environments. Each grove gets its own worktree, Docker Compose stack (app + db + redis), and tmux session.
 
 ```bash
-# Plant a grove for a task
+# Plant a grove (creates branch + worktree + compose stack)
 th grove plant my-feature
+th grove plant my-feature -t bugfix
 # => Grove planted for task 'my-feature'
 # =>   Branch:   myapp/feature/my-feature
 # =>   Worktree: /path/to/.treehouse/worktrees/my-feature
@@ -210,8 +172,9 @@ th grove init-claude-template  # CLAUDE.local.md template
 Lightweight worktrees — no containers, just a git worktree and tmux session.
 
 ```bash
-# Plant a tree for a task
+# Plant a tree (creates branch + worktree, no containers)
 th tree plant my-bugfix
+th tree plant my-bugfix -t bugfix
 # => Tree planted for task 'my-bugfix'
 # =>   Branch:   myapp/bugfix/my-bugfix
 # =>   Worktree: /path/to/.treehouse/worktrees/my-bugfix
@@ -374,7 +337,6 @@ compose_post_start:               # commands to run in the "app" service after c
 .treehouse/
   config.yml          # Project configuration
   local.yml           # Local user config
-  tasks.json          # Task database
   tmux-layout.json    # Workspace template (optional, for per-grove sessions)
   compose-template.yml # Docker Compose template (optional, for groves)
   ports.json          # Port allocation registry (for groves)
@@ -398,13 +360,10 @@ Everything under `.treehouse/` is gitignored by default.
 ```
 ┌─────────────────────────────────────────────────────────┐
 │  th init                                                 │
-│  th task create feature-a                                │
-│  th task create feature-b                                │
-│  th task create bugfix-c                                 │
 │                                                          │
 │  th grove plant feature-a --transplant                   │
 │  th grove plant feature-b                                │
-│  th tree plant bugfix-c                                  │
+│  th tree plant bugfix-c -t bugfix                        │
 │                                                          │
 │  th grove attach feature-a                               │
 │  ┌──────────────┬──────────────┬──────────────┐          │
@@ -419,7 +378,6 @@ Everything under `.treehouse/` is gitignored by default.
 │  th grove stop feature-a   # keep work, free resources   │
 │  th grove uproot feature-a # or destroy everything       │
 │  cd back-to-main && git merge feature-a-branch           │
-│  th task close feature-a                                 │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -427,11 +385,11 @@ Everything under `.treehouse/` is gitignored by default.
 
 Branches follow the convention: `<project>/<type>/<name>`
 
-| Task | Branch |
-|------|--------|
-| `th task create auth -t feature` | `myapp/feature/auth` |
-| `th task create nav -t bugfix` | `myapp/bugfix/nav` |
-| `th task create db -t refactor` | `myapp/refactor/db` |
+| Command | Branch |
+|---------|--------|
+| `th grove plant auth` | `myapp/feature/auth` |
+| `th tree plant nav -t bugfix` | `myapp/bugfix/nav` |
+| `th grove plant db -t refactor` | `myapp/refactor/db` |
 
 The project name comes from the directory name (set during `th init`).
 

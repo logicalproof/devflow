@@ -42,7 +42,7 @@ pub async fn run() -> Result<()> {
     }
 
     // Create directory structure
-    for dir in &["worktrees", "groves", "locks", "tasks", "compose"] {
+    for dir in &["worktrees", "groves", "locks", "compose"] {
         fs::create_dir_all(treehouse_dir.join(dir))?;
     }
 
@@ -86,21 +86,15 @@ pub async fn run() -> Result<()> {
     let local_config = LocalConfig::with_defaults();
     local_config.save(&treehouse_dir.join("local.yml"))?;
 
-    // Create empty tasks file
-    fs::write(treehouse_dir.join("tasks.json"), "[]")?;
-
     // Ensure .env is in .gitignore to prevent secrets from being committed
     ensure_gitignore_entry(&git.root, ".env");
     ensure_gitignore_entry(&git.root, ".treehouse/worktrees/");
     ensure_gitignore_entry(&git.root, ".treehouse/groves/");
     ensure_gitignore_entry(&git.root, ".treehouse/compose/");
     ensure_gitignore_entry(&git.root, ".treehouse/locks/");
-    ensure_gitignore_entry(&git.root, ".treehouse/tasks/");
     ensure_gitignore_entry(&git.root, ".treehouse/local.yml");
     ensure_gitignore_entry(&git.root, ".treehouse/ports.json");
     ensure_gitignore_entry(&git.root, ".treehouse/ports.json.lock");
-    ensure_gitignore_entry(&git.root, ".treehouse/tasks.json");
-
     println!(
         "{} Initialized treehouse for project '{}'",
         style("✓").green().bold(),
