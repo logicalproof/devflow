@@ -46,10 +46,16 @@ devflow tmux attach
 # => Three tmux windows, each cd'd into its own worktree
 # => Run Claude Code in each window — fully isolated branches
 
-# 5. When done with a task, tear it down
+# 5. When done with a task, stop or kill the worker
+devflow worker stop add-auth
+# => Tears down containers/tmux but keeps worktree + branch
+# => Re-spawn later with: devflow worker spawn add-auth
+
 devflow worker kill add-auth
+# => Removes everything: worktree, branch, tmux, containers, state
+# => Refuses if there are uncommitted changes (use --force to override)
+
 devflow task close add-auth
-# => Removes worktree, branch, tmux window, and state files
 ```
 
 ## How It Works
@@ -65,7 +71,9 @@ When you run `devflow worker spawn <task>`, devflow:
 
 If any step fails, everything rolls back in reverse order. No half-created state.
 
-When you run `devflow worker kill <task>`, it tears down in reverse: kills the tmux window, removes the worktree, deletes the branch, and cleans up state files.
+When you run `devflow worker stop <task>`, it tears down ephemeral resources (compose stack, tmux session, state file) but preserves the worktree and branch. You can re-spawn the same task later and it will reuse the existing worktree.
+
+When you run `devflow worker kill <task>`, it tears down everything: compose stack, tmux session, worktree, branch, and state files. If the worktree has uncommitted changes or unpushed commits, kill refuses and suggests `stop` or `kill --force`.
 
 ## Commands
 
@@ -154,9 +162,27 @@ devflow worker list
 # => Active workers:
 # =>   ● my-feature [running] branch:myapp/feature/my-feature [compose: 3001:5433:6380]
 
-# Kill a worker and clean up all its resources
+# Stop a worker (free containers/tmux, keep worktree + branch)
+devflow worker stop my-feature
+# => ✓ Worker 'my-feature' stopped (containers/tmux removed, worktree and branch preserved)
+# =>   Re-spawn with: devflow worker spawn my-feature
+
+# Re-spawn a stopped worker (reuses existing worktree)
+devflow worker spawn my-feature
+# => Reusing existing worktree at .devflow/worktrees/my-feature
+
+# Kill a worker and destroy all its resources
 devflow worker kill my-feature
 # => ✓ Worker 'my-feature' killed and resources cleaned up
+
+# Kill refuses if worktree has uncommitted changes or unpushed commits
+devflow worker kill my-feature
+# => Error: Worker 'my-feature' has uncommitted changes and 3 unpushed commit(s).
+# =>   Use 'devflow worker stop my-feature' to keep your work.
+# =>   Use 'devflow worker kill my-feature --force' to destroy everything.
+
+# Force kill regardless of dirty state
+devflow worker kill my-feature --force
 
 # See uptime and resource info for all workers
 devflow worker monitor
@@ -424,7 +450,8 @@ Everything under `.devflow/` is gitignored by default.
 │  └──────────────┴──────────────┴──────────────┘         │
 │                                                         │
 │  # When feature-a is done:                              │
-│  devflow worker kill feature-a                          │
+│  devflow worker stop feature-a  # keep work, free resources │
+│  devflow worker kill feature-a  # or destroy everything │
 │  cd back-to-main && git merge feature-a-branch          │
 │  devflow task close feature-a                           │
 └─────────────────────────────────────────────────────────┘
@@ -451,6 +478,6 @@ The project name comes from the directory name (set during `devflow init`).
 - **Orphan cleanup** — workers whose tmux windows disappeared are detected and cleaned up automatically on spawn, list, monitor, and via `devflow worker cleanup`
 - **Health check waiting** — after `compose up`, devflow polls container status until all services are running (and healthy, if a healthcheck is defined), with a configurable timeout (default 60s)
 - **Post-start hooks** — run commands inside the `app` container after health checks pass (e.g., `db:prepare`); failures warn but don't tear down the stack
-- **No force operations** — worktree removal uses `git worktree remove --force` but branch deletion is safe (won't delete unmerged branches that git protects)
+- **Dirty worktree protection** — `worker kill` checks for uncommitted changes and unpushed commits before destroying a worktree; use `worker stop` to free resources while preserving work, or `kill --force` to override
 - **Port allocation locking** — `ports.json` is protected by a file lock so concurrent `--compose` spawns never collide on ports
 - **Clean compose teardown** — `worker kill` runs `docker compose down -v` to stop containers and remove volumes before cleaning up other resources

@@ -51,9 +51,13 @@ pub fn spawn(
         false
     };
 
-    // 5. Create worktree
+    // 5. Create worktree (or reuse existing one from a previous `stop`)
     let worktree_path = devflow_dir.join("worktrees").join(task_name);
-    if let Err(e) = worktree::create_worktree(&git.root, &worktree_path, branch_name) {
+    let reusing_worktree = worktree::worktree_exists(&worktree_path);
+
+    if reusing_worktree {
+        println!("Reusing existing worktree at {}", worktree_path.display());
+    } else if let Err(e) = worktree::create_worktree(&git.root, &worktree_path, branch_name) {
         if branch_created {
             let _ = branch::delete_branch(git, branch_name);
         }
@@ -97,7 +101,9 @@ pub fn spawn(
     if enable_compose {
         // 5a. Check docker compose is available
         if let Err(e) = compose_mgr::check_available() {
-            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if !reusing_worktree {
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            }
             if branch_created {
                 let _ = branch::delete_branch(git, branch_name);
             }
@@ -108,7 +114,9 @@ pub fn spawn(
         let allocated = match ports::allocate(devflow_dir, task_name) {
             Ok(p) => p,
             Err(e) => {
-                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                if !reusing_worktree {
+                    let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                }
                 if branch_created {
                     let _ = branch::delete_branch(git, branch_name);
                 }
@@ -119,7 +127,9 @@ pub fn spawn(
         // 5b½. Check ports are actually available on the host
         if let Err(e) = ports::check_ports_available(&allocated) {
             let _ = ports::release(devflow_dir, task_name);
-            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if !reusing_worktree {
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            }
             if branch_created {
                 let _ = branch::delete_branch(git, branch_name);
             }
@@ -136,7 +146,9 @@ pub fn spawn(
             Ok(cf) => cf,
             Err(e) => {
                 let _ = ports::release(devflow_dir, task_name);
-                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                if !reusing_worktree {
+                    let _ = worktree::remove_worktree(&git.root, &worktree_path);
+                }
                 if branch_created {
                     let _ = branch::delete_branch(git, branch_name);
                 }
@@ -149,7 +161,9 @@ pub fn spawn(
             let _ = ports::release(devflow_dir, task_name);
             let compose_dir = devflow_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
-            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if !reusing_worktree {
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            }
             if branch_created {
                 let _ = branch::delete_branch(git, branch_name);
             }
@@ -165,7 +179,9 @@ pub fn spawn(
             let _ = ports::release(devflow_dir, task_name);
             let compose_dir = devflow_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
-            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            if !reusing_worktree {
+                let _ = worktree::remove_worktree(&git.root, &worktree_path);
+            }
             if branch_created {
                 let _ = branch::delete_branch(git, branch_name);
             }
@@ -287,7 +303,9 @@ pub fn spawn(
             let compose_dir = devflow_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
-        let _ = worktree::remove_worktree(&git.root, &worktree_path);
+        if !reusing_worktree {
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+        }
         if branch_created {
             let _ = branch::delete_branch(git, branch_name);
         }
@@ -326,7 +344,9 @@ pub fn spawn(
             let compose_dir = devflow_dir.join("compose").join(task_name);
             let _ = std::fs::remove_dir_all(compose_dir);
         }
-        let _ = worktree::remove_worktree(&git.root, &worktree_path);
+        if !reusing_worktree {
+            let _ = worktree::remove_worktree(&git.root, &worktree_path);
+        }
         if branch_created {
             let _ = branch::delete_branch(git, branch_name);
         }
@@ -336,14 +356,73 @@ pub fn spawn(
     Ok(state)
 }
 
-/// Kill a worker: tear down compose stack, remove tmux session, worktree, branch, and state file
-pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str) -> Result<()> {
+/// Stop a worker: tear down ephemeral resources (compose, tmux, state) but keep worktree + branch.
+pub fn stop(devflow_dir: &Path, task_name: &str) -> Result<()> {
     let state_path = WorkerState::state_path(devflow_dir, task_name);
     if !state_path.exists() {
         return Err(DevflowError::WorkerNotFound(task_name.to_string()));
     }
 
     let state = WorkerState::load(&state_path)?;
+
+    // Tear down compose stack if present
+    if let Some(ref cf) = state.compose_file {
+        if let Err(e) = compose_mgr::down(cf) {
+            eprintln!("Warning: compose down failed: {e}");
+        }
+        let _ = ports::release(devflow_dir, task_name);
+        let compose_dir = devflow_dir.join("compose").join(task_name);
+        let _ = std::fs::remove_dir_all(compose_dir);
+    }
+
+    // Kill per-worker tmux session
+    if let Some(ref ws) = state.tmux_session {
+        workspace::destroy_worker_session(ws);
+    }
+
+    // Remove state file (but NOT worktree or branch)
+    std::fs::remove_file(&state_path)?;
+
+    // Remove lock file if it exists
+    let lock_path = devflow_dir.join("locks").join(format!("{task_name}.lock"));
+    let _ = std::fs::remove_file(lock_path);
+
+    Ok(())
+}
+
+/// Kill a worker: tear down compose stack, remove tmux session, worktree, branch, and state file.
+/// If the worktree has uncommitted changes or unpushed commits and `force` is false,
+/// returns an error suggesting `stop` or `kill --force`.
+pub fn kill(git: &GitRepo, devflow_dir: &Path, task_name: &str, force: bool) -> Result<()> {
+    let state_path = WorkerState::state_path(devflow_dir, task_name);
+    if !state_path.exists() {
+        return Err(DevflowError::WorkerNotFound(task_name.to_string()));
+    }
+
+    let state = WorkerState::load(&state_path)?;
+
+    // Check for dirty worktree before destroying
+    if !force && state.worktree_path.exists() {
+        let has_changes = worktree::has_uncommitted_changes(&state.worktree_path);
+        let ahead = worktree::commits_ahead_of(&git.root, &state.branch, "main");
+
+        if has_changes || ahead > 0 {
+            let mut reasons = Vec::new();
+            if has_changes {
+                reasons.push("uncommitted changes".to_string());
+            }
+            if ahead > 0 {
+                reasons.push(format!("{ahead} unpushed commit(s)"));
+            }
+            return Err(DevflowError::Other(format!(
+                "Worker '{}' has {}.\n\
+                 Use 'devflow worker stop {0}' to tear down containers/tmux but keep your work.\n\
+                 Use 'devflow worker kill {0} --force' to destroy everything.",
+                task_name,
+                reasons.join(" and "),
+            )));
+        }
+    }
 
     // Tear down compose stack if present
     if let Some(ref cf) = state.compose_file {

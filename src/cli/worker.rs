@@ -35,10 +35,18 @@ pub enum WorkerCommands {
     },
     /// List all active workers
     List,
-    /// Kill a worker and clean up resources
+    /// Stop a worker (tear down containers/tmux but keep worktree and branch)
+    Stop {
+        /// Task name of the worker to stop
+        task: String,
+    },
+    /// Kill a worker and clean up all resources (worktree, branch, containers, tmux)
     Kill {
         /// Task name of the worker to kill
         task: String,
+        /// Force kill even if the worktree has uncommitted changes or unpushed commits
+        #[arg(long)]
+        force: bool,
     },
     /// Show worker status and resource usage
     Monitor,
@@ -65,7 +73,8 @@ pub async fn run(cmd: WorkerCommands) -> Result<()> {
             db_source,
         } => spawn(&task, prompt, prompt_file, compose, db_clone, db_source).await,
         WorkerCommands::List => list().await,
-        WorkerCommands::Kill { task } => kill(&task).await,
+        WorkerCommands::Stop { task } => stop(&task).await,
+        WorkerCommands::Kill { task, force } => kill(&task, force).await,
         WorkerCommands::Monitor => monitor().await,
         WorkerCommands::Cleanup => cleanup_cmd().await,
         WorkerCommands::DbClone { task, source } => db_clone_cmd(&task, source).await,
@@ -234,11 +243,30 @@ async fn list() -> Result<()> {
     Ok(())
 }
 
-async fn kill(task_name: &str) -> Result<()> {
+async fn stop(task_name: &str) -> Result<()> {
     let git = GitRepo::discover()?;
     let devflow_dir = ensure_devflow(&git)?;
 
-    orch_worker::kill(&git, &devflow_dir, task_name)?;
+    orch_worker::stop(&devflow_dir, task_name)?;
+
+    println!(
+        "{} Worker '{}' stopped (containers/tmux removed, worktree and branch preserved)",
+        style("✓").green().bold(),
+        task_name
+    );
+    println!(
+        "  Re-spawn with: {}",
+        style(format!("devflow worker spawn {task_name}")).cyan()
+    );
+
+    Ok(())
+}
+
+async fn kill(task_name: &str, force: bool) -> Result<()> {
+    let git = GitRepo::discover()?;
+    let devflow_dir = ensure_devflow(&git)?;
+
+    orch_worker::kill(&git, &devflow_dir, task_name, force)?;
 
     println!(
         "{} Worker '{}' killed and resources cleaned up",

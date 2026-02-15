@@ -126,3 +126,36 @@ fn parse_worktree_list(output: &str) -> Vec<WorktreeInfo> {
 pub fn worktree_exists(path: &Path) -> bool {
     path.exists() && path.join(".git").exists()
 }
+
+/// Check if a worktree has uncommitted changes (staged, unstaged, or untracked)
+pub fn has_uncommitted_changes(worktree_path: &Path) -> bool {
+    let output = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(worktree_path)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => !o.stdout.is_empty(),
+        _ => false,
+    }
+}
+
+/// Count commits on `branch` that are not on `base_branch`.
+/// Returns 0 on any error (non-fatal usage).
+pub fn commits_ahead_of(repo_root: &Path, branch: &str, base_branch: &str) -> u64 {
+    let range = format!("{base_branch}...{branch}");
+    let output = Command::new("git")
+        .args(["rev-list", "--count", &range])
+        .current_dir(repo_root)
+        .output();
+
+    match output {
+        Ok(o) if o.status.success() => {
+            String::from_utf8_lossy(&o.stdout)
+                .trim()
+                .parse()
+                .unwrap_or(0)
+        }
+        _ => 0,
+    }
+}
