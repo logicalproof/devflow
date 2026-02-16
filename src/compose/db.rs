@@ -236,6 +236,38 @@ fn project_name_from_path(worktree_path: &Path) -> Option<String> {
     }
 }
 
+/// Create the test database in the compose PostgreSQL container.
+/// Idempotent — ignores "already exists" errors.
+pub fn create_test_database(compose_file: &Path, worker_name: &str) {
+    let test_db = format!("{worker_name}_test");
+    println!("Creating test database '{test_db}'...");
+    let cmd = format!("createdb -U postgres {test_db} 2>/dev/null || true");
+    match compose_mgr::exec(compose_file, "db", &cmd) {
+        Ok(()) => println!("  Test database '{test_db}' ready."),
+        Err(e) => {
+            eprintln!("  Warning: failed to create test database: {e}");
+            eprintln!("  You can create it manually: docker compose exec db createdb -U postgres {test_db}");
+        }
+    }
+}
+
+/// Set up the test database schema using `rails db:prepare` with the test DATABASE_URL.
+/// Non-fatal: prints warnings on failure.
+pub fn setup_test_schema(compose_file: &Path) {
+    println!("Setting up test database schema...");
+    match compose_mgr::exec(
+        compose_file,
+        "app",
+        "DATABASE_URL=$DATABASE_URL_TEST RAILS_ENV=test rails db:prepare",
+    ) {
+        Ok(()) => println!("  Test database schema ready."),
+        Err(e) => {
+            eprintln!("  Warning: test schema setup failed: {e}");
+            eprintln!("  You can run it manually: docker compose exec -e DATABASE_URL=$DATABASE_URL_TEST app rails db:prepare");
+        }
+    }
+}
+
 /// Run `rails db:prepare` and `rails db:seed` in the compose app container.
 /// Non-fatal: prints warnings on failure.
 pub fn setup_database(compose_file: &Path) {

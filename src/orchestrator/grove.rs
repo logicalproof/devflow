@@ -186,6 +186,9 @@ pub fn plant(
             return Err(e);
         }
 
+        // 5e½. Create test database (non-fatal: warn on failure, don't tear down)
+        compose_db::create_test_database(&cf, task_name);
+
         // 5e¾. Database setup (non-fatal: warn on failure, don't tear down)
         if db_clone {
             let source = if let Some(src) = db_source {
@@ -214,6 +217,9 @@ pub fn plant(
         } else {
             compose_db::setup_database(&cf);
         }
+
+        // 5e⅞. Set up test database schema (non-fatal: warn on failure, don't tear down)
+        compose_db::setup_test_schema(&cf);
 
         // 5f. Run post-start hooks (warn on failure, don't tear down)
         for hook in compose_post_start {

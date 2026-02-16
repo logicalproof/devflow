@@ -181,8 +181,8 @@ Examples:
 # Rails console
 docker compose -f "{{COMPOSE_FILE}}" -p "{{COMPOSE_PROJECT}}" exec app rails console
 
-# Run tests
-docker compose -f "{{COMPOSE_FILE}}" -p "{{COMPOSE_PROJECT}}" exec app rspec
+# Run tests (uses test database to avoid clobbering dev data)
+docker compose -f "{{COMPOSE_FILE}}" -p "{{COMPOSE_PROJECT}}" exec -e DATABASE_URL=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_test app rspec
 
 # Run migrations
 docker compose -f "{{COMPOSE_FILE}}" -p "{{COMPOSE_PROJECT}}" exec app rails db:migrate
@@ -205,7 +205,9 @@ docker compose -f "{{COMPOSE_FILE}}" -p "{{COMPOSE_PROJECT}}" exec app bundle in
 - Do NOT modify the compose file at `{{COMPOSE_FILE}}`
 - The app container mounts `{{WORKTREE_PATH}}` as `/app`
 - Database URL: `postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_dev`
+- Test Database URL: `postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_test`
 - Redis URL: `redis://redis:6379/0`
+- `DATABASE_URL_TEST` is set in the container environment — tests MUST override `DATABASE_URL` with the test URL (see rspec example above) to avoid clobbering dev data
 {{/if}}
 {{#if SHARED_COMPOSE}}
 ## Shared Compose Environment

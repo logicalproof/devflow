@@ -64,10 +64,11 @@ When you run `groot grove plant <name>`, groot:
 4. Creates a git worktree at `.groot/worktrees/<task>/`
 5. Generates a Docker Compose stack (app + db + redis) with unique ports
 6. Waits for containers to be healthy
-7. Opens a tmux window named `<task>` cd'd into the worktree
-8. Saves state to `.groot/groves/<name>.json`
+7. Creates a separate test database (`<task>_test`) and prepares its schema
+8. Opens a tmux window named `<task>` cd'd into the worktree
+9. Saves state to `.groot/groves/<name>.json`
 
-`groot tree plant <name>` does steps 1–4 and 7–8, skipping containers entirely.
+`groot tree plant <name>` does steps 1–4 and 8–9, skipping containers entirely.
 
 If any step fails, everything rolls back in reverse order. No half-created state.
 
@@ -421,6 +422,7 @@ The project name comes from the directory name (set during `groot init`).
 - **Port conflict pre-check** — before starting a compose stack, groot verifies that allocated ports (app/db/redis) are actually free on the host; if a port is in use, you get a clear error instead of a cryptic Docker failure
 - **Orphan cleanup** — groves whose tmux windows disappeared are detected and cleaned up automatically on plant, list, status, and via `groot grove prune`
 - **Health check waiting** — after `compose up`, groot polls container status until all services are running (and healthy, if a healthcheck is defined), with a configurable timeout (default 60s)
+- **Separate test database** — groves automatically create a `<task>_test` database alongside dev, with `DATABASE_URL_TEST` set in the container environment, so `rspec` never truncates dev data
 - **Post-start hooks** — run commands inside the `app` container after health checks pass (e.g., `db:prepare`); failures warn but don't tear down the stack
 - **Dirty worktree protection** — `uproot` checks for uncommitted changes and unpushed commits before destroying a worktree; use `stop` to free resources while preserving work, or `uproot --force` to override
 - **Port allocation locking** — `ports.json` is protected by a file lock so concurrent grove plants never collide on ports

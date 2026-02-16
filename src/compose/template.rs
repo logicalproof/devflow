@@ -277,6 +277,7 @@ pub fn default_rails_template() -> &'static str {
         required: false
     environment:
       - DATABASE_URL=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_dev
+      - DATABASE_URL_TEST=postgres://postgres:postgres@db:5432/{{WORKER_NAME}}_test
       - REDIS_URL=redis://redis:6379/0
       - RAILS_ENV=development
     depends_on:
